@@ -130,6 +130,13 @@
         <version.mongo.server>3.6</version.mongo.server>
         <version.cassandra>3.11.10</version.cassandra>
 
+        <!-- datav -->
+        <skipTests>true</skipTests>
+        <maven.javadoc.skip>true</maven.javadoc.skip>
+        <checkstyle.skip>true</checkstyle.skip>
+        <docker.prefix>docker.datav.com/datav</docker.prefix>
+        <enforcer.skip>true</enforcer.skip>
+        <dockerfile.skip>true</dockerfile.skip>
     </properties>
 
     <modules>
