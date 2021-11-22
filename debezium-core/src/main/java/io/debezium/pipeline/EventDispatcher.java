@@ -115,9 +115,7 @@ public class EventDispatcher<T extends DataCollectionId> {
         this.connectorConfig = connectorConfig;
         this.topicSelector = topicSelector;
         this.schema = schema;
-        this.historizedSchema = schema instanceof HistorizedDatabaseSchema
-                ? (HistorizedDatabaseSchema<T>) schema
-                : null;
+        this.historizedSchema = schema.isHistorized() ? (HistorizedDatabaseSchema<T>) schema : null;
         this.queue = queue;
         this.filter = filter;
         this.changeEventCreator = changeEventCreator;
@@ -278,10 +276,16 @@ public class EventDispatcher<T extends DataCollectionId> {
 
     public void dispatchTransactionCommittedEvent(Partition partition, OffsetContext offset) throws InterruptedException {
         transactionMonitor.transactionComittedEvent(partition, offset);
+        if (incrementalSnapshotChangeEventSource != null) {
+            incrementalSnapshotChangeEventSource.processTransactionCommittedEvent(partition, offset);
+        }
     }
 
     public void dispatchTransactionStartedEvent(Partition partition, String transactionId, OffsetContext offset) throws InterruptedException {
         transactionMonitor.transactionStartedEvent(partition, transactionId, offset);
+        if (incrementalSnapshotChangeEventSource != null) {
+            incrementalSnapshotChangeEventSource.processTransactionStartedEvent(partition, offset);
+        }
     }
 
     public void dispatchConnectorEvent(ConnectorEvent event) {

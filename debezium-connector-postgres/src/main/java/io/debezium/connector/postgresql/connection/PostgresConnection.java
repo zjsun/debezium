@@ -84,7 +84,7 @@ public class PostgresConnection extends JdbcConnection {
      * @param valueConverterBuilder supplies a configured {@link PostgresValueConverter} for a given {@link TypeRegistry}
      */
     public PostgresConnection(Configuration config, PostgresValueConverterBuilder valueConverterBuilder) {
-        super(config, FACTORY, PostgresConnection::validateServerVersion, PostgresConnection::defaultSettings);
+        super(config, FACTORY, PostgresConnection::validateServerVersion, PostgresConnection::defaultSettings, "\"", "\"");
 
         if (Objects.isNull(valueConverterBuilder)) {
             this.typeRegistry = null;
@@ -103,15 +103,15 @@ public class PostgresConnection extends JdbcConnection {
      * @param config {@link Configuration} instance, may not be null.
      * @param typeRegistry an existing/already-primed {@link TypeRegistry} instance
      */
-    public PostgresConnection(Configuration config, TypeRegistry typeRegistry) {
-        super(config, FACTORY, PostgresConnection::validateServerVersion, PostgresConnection::defaultSettings);
+    public PostgresConnection(PostgresConnectorConfig config, TypeRegistry typeRegistry) {
+        super(config.getJdbcConfig(), FACTORY, PostgresConnection::validateServerVersion, PostgresConnection::defaultSettings, "\"", "\"");
         if (Objects.isNull(typeRegistry)) {
             this.typeRegistry = null;
             this.defaultValueConverter = null;
         }
         else {
             this.typeRegistry = typeRegistry;
-            final PostgresValueConverter valueConverter = PostgresValueConverter.of(new PostgresConnectorConfig(config), this.getDatabaseCharset(), typeRegistry);
+            final PostgresValueConverter valueConverter = PostgresValueConverter.of(config, this.getDatabaseCharset(), typeRegistry);
             this.defaultValueConverter = new PostgresDefaultValueConverter(valueConverter, this.getTimestampUtils());
         }
     }
@@ -123,7 +123,7 @@ public class PostgresConnection extends JdbcConnection {
      * @param config {@link Configuration} instance, may not be null.
      */
     public PostgresConnection(Configuration config) {
-        this(config, (TypeRegistry) null);
+        this(config, null);
     }
 
     /**
@@ -491,6 +491,15 @@ public class PostgresConnection extends JdbcConnection {
         if (majorVersion < 9 || (majorVersion == 9 && minorVersion < 4)) {
             throw new SQLException("Cannot connect to a version of Postgres lower than 9.4");
         }
+    }
+
+    @Override
+    public String quotedColumnIdString(String columnName) {
+        if (columnName.contains("\"")) {
+            columnName = columnName.replaceAll("\"", "\"\"");
+        }
+
+        return super.quotedColumnIdString(columnName);
     }
 
     @Override

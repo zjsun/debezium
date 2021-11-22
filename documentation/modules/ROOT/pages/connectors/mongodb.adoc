@@ -4,6 +4,7 @@
 = {prodname} connector for MongoDB
 
 :context: mongodb
+:mbean-name: {context}
 ifdef::community[]
 
 :toc:
@@ -253,6 +254,14 @@ This ensures that all events for a specific document are always totally ordered.
 === Transaction Metadata
 
 {prodname} can generate events that represents transaction metadata boundaries and enrich change data event messages.
+
+[NOTE]
+.Limits on when {prodname} receives transaction metadata
+====
+{prodname} registers and receives metadata only for transactions that occur after you deploy the connector.
+Metadata for transactions that occur before you deploy the connector is not available.
+====
+
 For every transaction `BEGIN` and `END`, {prodname} generates an event that contains the following fields:
 
 `status`:: `BEGIN` or `END`
@@ -303,7 +312,7 @@ Following is an example of what a message looks like:
 [source,json,indent=0,subs="+attributes"]
 ----
 {
-  "before": null,
+  "patch": null,
   "after": {
     "pk": "2",
     "aa": "1"
@@ -510,6 +519,7 @@ The value portion of a change event for a change to this document is described f
 * <<mongodb-create-events,_create_ events>>
 * <<mongodb-update-events,_update_ events>>
 * <<mongodb-delete-events,_delete_ events>>
+* <<mongodb-tombstone-events,Tombstone events>>
 
 [id="mongodb-create-events"]
 === _create_ events
@@ -535,13 +545,6 @@ The following example shows the value portion of a change event that the connect
           "name": "io.debezium.data.Json",
           "version": 1,
           "field": "patch"
-        },
-        {
-          "type": "string",
-          "optional": true,
-          "name": "io.debezium.data.Json",
-          "version": 1,
-          "field": "filter"
         },
         {
           "type": "struct",
@@ -850,7 +853,7 @@ a|Mandatory field that describes the source metadata for the event. This field c
 MongoDB connector events are designed to work with link:{link-kafka-docs}/#compaction[Kafka log compaction]. Log compaction enables removal of some older messages as long as at least the most recent message for every key is kept. This lets Kafka reclaim storage space while ensuring that the topic contains a complete data set and can be used for reloading key-based state.
 
 [id="mongodb-tombstone-events"]
-.Tombstone events
+=== Tombstone events
 All MongoDB connector events for a uniquely identified document have exactly the same key. When a document is deleted, the _delete_ event value still works with log compaction because Kafka can remove all earlier messages that have that same key. However, for Kafka to remove all messages that have that key, the message value must be `null`. To make this possible, after {prodname}’s MongoDB connector emits a _delete_ event, the connector emits a special tombstone event that has the same key but a `null` value. A tombstone event informs Kafka that all messages with that same key can be removed.
 
 
@@ -1422,8 +1425,6 @@ The {link-prefix}:{link-debezium-monitoring}#monitoring-debezium[{prodname} moni
 [[mongodb-snapshot-metrics]]
 === Snapshot Metrics
 
-The *MBean* is `debezium.mongodb:type=connector-metrics,context=snapshot,server=_<mongodb.name>_`.
-
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-snapshot-metrics.adoc[leveloffset=+1]
 
 The {prodname} MongoDB connector also provides the following custom snapshot metrics:
@@ -1443,8 +1444,6 @@ The {prodname} MongoDB connector also provides the following custom snapshot met
 // Title: Monitoring {prodname} MongoDB connector record streaming
 [[mongodb-streaming-metrics]]
 === Streaming Metrics
-
-The *MBean* is `debezium.sql_server:type=connector-metrics,context=streaming,server=_<mongodb.name>_`.
 
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-streaming-metrics.adoc[leveloffset=+1]
 

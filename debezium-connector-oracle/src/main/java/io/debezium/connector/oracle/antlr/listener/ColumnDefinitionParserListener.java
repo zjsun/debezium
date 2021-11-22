@@ -200,12 +200,20 @@ public class ColumnDefinitionParserListener extends BaseParserListener {
                         .jdbcType(Types.CHAR)
                         .type("CHAR")
                         .length(1);
+
+                if (precisionPart != null) {
+                    setPrecision(precisionPart, columnEditor);
+                }
             }
             else if (ctx.native_datatype_element().NCHAR() != null) {
                 columnEditor
                         .jdbcType(Types.NCHAR)
                         .type("NCHAR")
                         .length(1);
+
+                if (precisionPart != null) {
+                    setPrecision(precisionPart, columnEditor);
+                }
             }
             else if (ctx.native_datatype_element().BINARY_FLOAT() != null) {
                 columnEditor
@@ -259,6 +267,13 @@ public class ColumnDefinitionParserListener extends BaseParserListener {
                 columnEditor
                         .jdbcType(Types.CLOB)
                         .type("CLOB");
+            }
+            else if (ctx.native_datatype_element().RAW() != null) {
+                columnEditor
+                        .jdbcType(OracleTypes.RAW)
+                        .type("RAW");
+
+                setPrecision(precisionPart, columnEditor);
             }
             else {
                 throw new IllegalArgumentException("Unsupported column type: " + ctx.native_datatype_element().getText());

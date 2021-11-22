@@ -14,11 +14,13 @@ import java.text.DecimalFormat;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import org.slf4j.Logger;
@@ -43,6 +45,8 @@ import io.debezium.jdbc.JdbcConfiguration;
 import io.debezium.pipeline.ErrorHandler;
 import io.debezium.pipeline.EventDispatcher;
 import io.debezium.pipeline.source.spi.StreamingChangeEventSource;
+import io.debezium.relational.Column;
+import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
 import io.debezium.util.Clock;
 import io.debezium.util.Metronome;
@@ -54,6 +58,7 @@ import io.debezium.util.Metronome;
 public class LogMinerStreamingChangeEventSource implements StreamingChangeEventSource<OraclePartition, OracleOffsetContext> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(LogMinerStreamingChangeEventSource.class);
+    private static final int MAXIMUM_NAME_LENGTH = 30;
     private static final String ALL_COLUMN_LOGGING = "ALL COLUMN LOGGING";
 
     private final OracleConnection jdbcConnection;
@@ -111,9 +116,14 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
                 }
 
                 setNlsSessionParameters(jdbcConnection);
-                checkSupplementalLogging(jdbcConnection, connectorConfig.getPdbName(), schema);
+                checkDatabaseAndTableState(jdbcConnection, connectorConfig.getPdbName(), schema);
 
                 try (LogMinerEventProcessor processor = createProcessor(context, partition, offsetContext)) {
+
+                    if (archiveLogOnlyMode && !waitForStartScnInArchiveLogs(context, startScn)) {
+                        return;
+                    }
+
                     currentRedoLogSequences = getCurrentRedoLogSequences();
                     initializeRedoLogsForMining(jdbcConnection, false, startScn);
 
@@ -121,8 +131,21 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
                         // Calculate time difference before each mining session to detect time zone offset changes (e.g. DST) on database server
                         streamingMetrics.calculateTimeDifference(getDatabaseSystemTime(jdbcConnection));
 
+                        if (archiveLogOnlyMode && !waitForStartScnInArchiveLogs(context, startScn)) {
+                            break;
+                        }
+
                         Instant start = Instant.now();
                         endScn = calculateEndScn(jdbcConnection, startScn, endScn);
+
+                        // This is a small window where when archive log only mode has completely caught up to the last
+                        // record in the archive logs that both the start and end values are identical. In this use
+                        // case we want to pause and restart the loop waiting for a new archive log before proceeding.
+                        if (archiveLogOnlyMode && startScn.equals(endScn)) {
+                            pauseBetweenMiningSessions();
+                            continue;
+                        }
+
                         flushStrategy.flush(jdbcConnection.getCurrentScn());
 
                         if (hasLogSwitchOccurred()) {
@@ -173,7 +196,7 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
         streamingMetrics.setProcessGlobalAreaMemory(sessionProcessGlobalAreaMemory, sessionProcessGlobalAreaMaxMemory);
 
         final DecimalFormat format = new DecimalFormat("#.##");
-        LOGGER.info("Oracle Session UGA {}MB (max = {}MB), PGA {}MB (max = {}MB)",
+        LOGGER.debug("Oracle Session UGA {}MB (max = {}MB), PGA {}MB (max = {}MB)",
                 format.format(sessionUserGlobalAreaMemory / 1024.f / 1024.f),
                 format.format(sessionUserGlobalAreaMaxMemory / 1024.f / 1024.f),
                 format.format(sessionProcessGlobalAreaMemory / 1024.f / 1024.f),
@@ -224,6 +247,8 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
                 setLogFilesForMining(connection, startScn, archiveLogRetention, archiveLogOnlyMode, archiveDestinationName);
             }
         }
+
+        updateRedoLogMetrics();
     }
 
     /**
@@ -258,31 +283,36 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
 
             currentRedoLogSequences = newSequences;
 
-            final Map<String, String> logStatuses = jdbcConnection.queryAndMap(SqlUtils.redoLogStatusQuery(), rs -> {
-                Map<String, String> results = new LinkedHashMap<>();
-                while (rs.next()) {
-                    results.put(rs.getString(1), rs.getString(2));
-                }
-                return results;
-            });
-
             final int logSwitchCount = jdbcConnection.queryAndMap(SqlUtils.switchHistoryQuery(archiveDestinationName), rs -> {
                 if (rs.next()) {
                     return rs.getInt(2);
                 }
                 return 0;
             });
-
-            final Set<String> fileNames = getCurrentRedoLogFiles(jdbcConnection);
-
-            streamingMetrics.setRedoLogStatus(logStatuses);
             streamingMetrics.setSwitchCount(logSwitchCount);
-            streamingMetrics.setCurrentLogFileName(fileNames);
-
             return true;
         }
 
         return false;
+    }
+
+    /**
+     * Updates the redo log names and statues in the streaming metrics.
+     *
+     * @throws SQLException if a database exception occurred
+     */
+    private void updateRedoLogMetrics() throws SQLException {
+        final Map<String, String> logStatuses = jdbcConnection.queryAndMap(SqlUtils.redoLogStatusQuery(), rs -> {
+            Map<String, String> results = new LinkedHashMap<>();
+            while (rs.next()) {
+                results.put(rs.getString(1), rs.getString(2));
+            }
+            return results;
+        });
+
+        final Set<String> fileNames = getCurrentRedoLogFiles(jdbcConnection);
+        streamingMetrics.setCurrentLogFileName(fileNames);
+        streamingMetrics.setRedoLogStatus(logStatuses);
     }
 
     /**
@@ -378,6 +408,7 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
             streamingMetrics.addCurrentMiningSessionStart(Duration.between(start, Instant.now()));
         }
         catch (SQLException e) {
+            LOGGER.error("Got exception when starting mining session.", e);
             // Capture the database state before throwing the exception up
             LogMinerDatabaseStateWriter.write(connection);
             throw e;
@@ -427,7 +458,9 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
      * @throws SQLException if the current max system change number cannot be obtained from the database
      */
     private Scn calculateEndScn(OracleConnection connection, Scn startScn, Scn prevEndScn) throws SQLException {
-        Scn currentScn = connection.getCurrentScn();
+        Scn currentScn = archiveLogOnlyMode
+                ? connection.getMaxArchiveLogScn(archiveDestinationName)
+                : connection.getCurrentScn();
         streamingMetrics.setCurrentScn(currentScn);
 
         // Add the current batch size to the starting system change number
@@ -462,20 +495,43 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
                 LOGGER.debug("Top SCN calculation resulted in end before start SCN, using current SCN {} as end SCN.", currentScn);
                 return currentScn;
             }
-            LOGGER.debug("Using Top SCN calculation {} as end SCN.", topScnToMine);
+
+            if (prevEndScn != null) {
+                final Scn deltaScn = currentScn.subtract(prevEndScn);
+                if (deltaScn.compareTo(Scn.valueOf(connectorConfig.getLogMiningScnGapDetectionGapSizeMin())) > 0) {
+                    Optional<OffsetDateTime> prevEndScnTimestamp = connection.getScnToTimestamp(prevEndScn);
+                    if (prevEndScnTimestamp.isPresent()) {
+                        Optional<OffsetDateTime> currentScnTimestamp = connection.getScnToTimestamp(currentScn);
+                        if (currentScnTimestamp.isPresent()) {
+                            long timeDeltaMs = ChronoUnit.MILLIS.between(prevEndScnTimestamp.get(), currentScnTimestamp.get());
+                            if (timeDeltaMs < connectorConfig.getLogMiningScnGapDetectionTimeIntervalMaxMs()) {
+                                LOGGER.warn("Detected possible SCN gap, using current SCN, startSCN {}, prevEndScn {} timestamp {}, current SCN {} timestamp {}.",
+                                        startScn,
+                                        prevEndScn, prevEndScnTimestamp.get(), currentScn, currentScnTimestamp.get());
+                                return currentScn;
+                            }
+                        }
+                    }
+                }
+            }
+
+            LOGGER.debug("Using Top SCN calculation {} as end SCN. currentScn {}, startScn {}", topScnToMine, currentScn, startScn);
             return topScnToMine;
         }
     }
 
     /**
-     * Validates the supplemental logging configuration for the source database and its captured tables.
+     * Checks and validates the database's supplemental logging configuration as well as the lengths of the
+     * table and column names that are part of the database schema.
      *
      * @param connection database connection, should not be {@code null}
      * @param pdbName pluggable database name, can be {@code null} when not using pluggable databases
      * @param schema connector's database schema, should not be {@code null}
      * @throws SQLException if a database exception occurred
      */
-    private void checkSupplementalLogging(OracleConnection connection, String pdbName, OracleDatabaseSchema schema) throws SQLException {
+    private void checkDatabaseAndTableState(OracleConnection connection, String pdbName, OracleDatabaseSchema schema) throws SQLException {
+        final Instant start = Instant.now();
+        LOGGER.trace("Checking database and table state, this may take time depending on the size of your schema.");
         try {
             if (pdbName != null) {
                 connection.setSessionToPdb(pdbName);
@@ -490,18 +546,58 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
                 }
 
                 // Check if ALL COLUMNS supplemental logging is enabled for each captured table
-                for (TableId tableId : schema.getTables().tableIds()) {
+                for (TableId tableId : schema.tableIds()) {
                     if (!isTableAllColumnsSupplementalLoggingEnabled(connection, tableId)) {
                         throw new DebeziumException("Supplemental logging not properly configured for table " + tableId + ". "
                                 + "Use: ALTER TABLE " + tableId.schema() + "." + tableId.table()
                                 + " ADD SUPPLEMENTAL LOG DATA (ALL) COLUMNS");
                     }
+                    final Table table = schema.tableFor(tableId);
+                    if (table == null) {
+                        // This should never happen; however in the event something would cause it we can
+                        // at least get the table identifier thrown in the error to debug from rather
+                        // than an erroneous NPE
+                        throw new DebeziumException("Unable to find table in relational model: " + tableId);
+                    }
+                    checkTableColumnNameLengths(table);
+                }
+            }
+            else {
+                // ALL supplemental logging is enabled, now check table/column lengths
+                for (TableId tableId : schema.tableIds()) {
+                    final Table table = schema.tableFor(tableId);
+                    if (table == null) {
+                        // This should never happen; however in the event something would cause it we can
+                        // at least get the table identifier thrown in the error to debug from rather
+                        // than an erroneous NPE
+                        throw new DebeziumException("Unable to find table in relational model: " + tableId);
+                    }
+                    checkTableColumnNameLengths(table);
                 }
             }
         }
         finally {
             if (pdbName != null) {
                 connection.resetSessionToCdb();
+            }
+        }
+        LOGGER.trace("Database and table state check finished after {} ms", Duration.between(start, Instant.now()).toMillis());
+    }
+
+    /**
+     * Examines the table and column names and logs a warning if any name exceeds {@link #MAXIMUM_NAME_LENGTH}.
+     *
+     * @param table the table, should not be {@code null}
+     */
+    private void checkTableColumnNameLengths(Table table) {
+        if (table.id().table().length() > MAXIMUM_NAME_LENGTH) {
+            LOGGER.warn("Table '{}' won't be captured by Oracle LogMiner because its name exceeds {} characters.",
+                    table.id().table(), MAXIMUM_NAME_LENGTH);
+        }
+        for (Column column : table.columns()) {
+            if (column.name().length() > MAXIMUM_NAME_LENGTH) {
+                LOGGER.warn("Table '{}' won't be captured by Oracle LogMiner because column '{}' exceeds {} characters.",
+                        table.id().table(), column.name(), MAXIMUM_NAME_LENGTH);
             }
         }
     }
@@ -573,6 +669,48 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
             return new RacCommitLogWriterFlushStrategy(connectorConfig, jdbcConfiguration, streamingMetrics);
         }
         return new CommitLogWriterFlushStrategy(jdbcConnection);
+    }
+
+    /**
+     * Waits for the starting system change number to exist in the archive logs before returning.
+     *
+     * @param context the change event source context
+     * @param startScn the starting system change number
+     * @return true if the code should continue, false if the code should end.
+     * @throws SQLException if a database exception occurred
+     * @throws InterruptedException if the pause between checks is interrupted
+     */
+    private boolean waitForStartScnInArchiveLogs(ChangeEventSourceContext context, Scn startScn) throws SQLException, InterruptedException {
+        boolean showStartScnNotInArchiveLogs = true;
+        while (context.isRunning() && !isStartScnInArchiveLogs(startScn)) {
+            if (showStartScnNotInArchiveLogs) {
+                LOGGER.warn("Starting SCN {} is not yet in archive logs, waiting for archive log switch.", startScn);
+                showStartScnNotInArchiveLogs = false;
+                Metronome.sleeper(connectorConfig.getArchiveLogOnlyScnPollTime(), clock).pause();
+            }
+        }
+
+        if (!context.isRunning()) {
+            return false;
+        }
+
+        if (!showStartScnNotInArchiveLogs) {
+            LOGGER.info("Starting SCN {} is now available in archive logs, log mining unpaused.", startScn);
+        }
+        return true;
+    }
+
+    /**
+     * Returns whether the starting system change number is in the archive logs.
+     *
+     * @param startScn the starting system change number
+     * @return true if the starting system change number is in the archive logs; false otherwise.
+     * @throws SQLException if a database exception occurred
+     */
+    private boolean isStartScnInArchiveLogs(Scn startScn) throws SQLException {
+        List<LogFile> logs = LogMinerHelper.getLogFilesForOffsetScn(jdbcConnection, startScn, archiveLogRetention, archiveLogOnlyMode, archiveDestinationName);
+        return logs.stream()
+                .anyMatch(l -> l.getFirstScn().compareTo(startScn) <= 0 && l.getNextScn().compareTo(startScn) > 0 && l.getType().equals(LogFile.Type.ARCHIVE));
     }
 
     @Override

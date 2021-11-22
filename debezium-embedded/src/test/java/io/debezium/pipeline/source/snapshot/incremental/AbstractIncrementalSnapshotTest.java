@@ -7,6 +7,7 @@ package io.debezium.pipeline.source.snapshot.incremental;
 
 import java.nio.file.Path;
 import java.sql.SQLException;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +17,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.source.SourceConnector;
@@ -76,11 +78,21 @@ public abstract class AbstractIncrementalSnapshotTest<T extends SourceConnector>
     protected Map<Integer, Integer> consumeMixedWithIncrementalSnapshot(int recordCount,
                                                                         Predicate<Map.Entry<Integer, Integer>> dataCompleted, Consumer<List<SourceRecord>> recordConsumer)
             throws InterruptedException {
+        return consumeMixedWithIncrementalSnapshot(recordCount, dataCompleted, k -> k.getInt32(pkFieldName()), topicName(), recordConsumer);
+    }
+
+    protected Map<Integer, Integer> consumeMixedWithIncrementalSnapshot(
+                                                                        int recordCount,
+                                                                        Predicate<Map.Entry<Integer, Integer>> dataCompleted,
+                                                                        Function<Struct, Integer> idCalculator,
+                                                                        String topicName,
+                                                                        Consumer<List<SourceRecord>> recordConsumer)
+            throws InterruptedException {
         final Map<Integer, Integer> dbChanges = new HashMap<>();
         int noRecords = 0;
         for (;;) {
             final SourceRecords records = consumeRecordsByTopic(1);
-            final List<SourceRecord> dataRecords = records.recordsForTopic(topicName());
+            final List<SourceRecord> dataRecords = records.recordsForTopic(topicName);
             if (records.allRecordsInOrder().isEmpty()) {
                 noRecords++;
                 Assertions.assertThat(noRecords).describedAs("Too many no data record results")
@@ -92,7 +104,7 @@ public abstract class AbstractIncrementalSnapshotTest<T extends SourceConnector>
                 continue;
             }
             dataRecords.forEach(record -> {
-                final int id = ((Struct) record.key()).getInt32(pkFieldName());
+                final int id = idCalculator.apply((Struct) record.key());
                 final int value = ((Struct) record.value()).getStruct("after").getInt32(valueFieldName());
                 dbChanges.put(id, value);
             });
@@ -118,17 +130,24 @@ public abstract class AbstractIncrementalSnapshotTest<T extends SourceConnector>
         return "pk";
     }
 
-    protected void sendAdHocSnapshotSignal() throws SQLException {
+    protected void sendAdHocSnapshotSignal(String... dataCollectionIds) throws SQLException {
+        final String dataCollectionIdsList = Arrays.stream(dataCollectionIds)
+                .map(x -> '"' + x + '"')
+                .collect(Collectors.joining(", "));
         try (final JdbcConnection connection = databaseConnection()) {
             String query = String.format(
-                    "INSERT INTO %s VALUES('ad-hoc', 'execute-snapshot', '{\"data-collections\": [\"%s\"]}')",
-                    signalTableName(), tableDataCollectionId());
+                    "INSERT INTO %s VALUES('ad-hoc', 'execute-snapshot', '{\"data-collections\": [%s]}')",
+                    signalTableName(), dataCollectionIdsList);
             logger.info("Sending signal with query {}", query);
             connection.execute(query);
         }
         catch (Exception e) {
             logger.warn("Failed to send signal", e);
         }
+    }
+
+    protected void sendAdHocSnapshotSignal() throws SQLException {
+        sendAdHocSnapshotSignal(tableDataCollectionId());
     }
 
     protected void startConnector(DebeziumEngine.CompletionCallback callback) {
@@ -165,6 +184,22 @@ public abstract class AbstractIncrementalSnapshotTest<T extends SourceConnector>
         startConnector();
 
         sendAdHocSnapshotSignal();
+
+        final int expectedRecordCount = ROW_COUNT;
+        final Map<Integer, Integer> dbChanges = consumeMixedWithIncrementalSnapshot(expectedRecordCount);
+        for (int i = 0; i < expectedRecordCount; i++) {
+            Assertions.assertThat(dbChanges).includes(MapAssert.entry(i + 1, i));
+        }
+    }
+
+    @Test
+    public void invalidTablesInTheList() throws Exception {
+        Testing.Print.enable();
+
+        populateTable();
+        startConnector();
+
+        sendAdHocSnapshotSignal("invalid1", tableDataCollectionId(), "invalid2");
 
         final int expectedRecordCount = ROW_COUNT;
         final Map<Integer, Integer> dbChanges = consumeMixedWithIncrementalSnapshot(expectedRecordCount);

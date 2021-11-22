@@ -52,10 +52,15 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
     protected final static int MIN_BATCH_SIZE = 1_000;
     protected final static int MAX_BATCH_SIZE = 100_000;
 
+    protected final static int DEFAULT_SCN_GAP_SIZE = 1_000_000;
+    protected final static int DEFAULT_SCN_GAP_TIME_INTERVAL = 20_000;
+
     protected final static Duration MAX_SLEEP_TIME = Duration.ofMillis(3_000);
     protected final static Duration DEFAULT_SLEEP_TIME = Duration.ofMillis(1_000);
     protected final static Duration MIN_SLEEP_TIME = Duration.ZERO;
     protected final static Duration SLEEP_TIME_INCREMENT = Duration.ofMillis(200);
+
+    protected final static Duration ARCHIVE_LOG_ONLY_POLL_TIME = Duration.ofMillis(10_000);
 
     public static final Field PORT = RelationalDatabaseConnectorConfig.PORT
             .withDefault(DEFAULT_PORT);
@@ -258,6 +263,14 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
                     "When set to `true`, the connector will only mine archive logs. There are circumstances where its advantageous to only " +
                     "mine archive logs and accept latency in event emission due to frequent revolving redo logs.");
 
+    public static final Field LOG_MINING_ARCHIVE_LOG_ONLY_SCN_POLL_INTERVAL_MS = Field.create("log.mining.archive.log.only.scn.poll.interval.ms")
+            .withDisplayName("The interval in milliseconds to wait between polls when SCN is not yet in the archive logs")
+            .withType(Type.LONG)
+            .withWidth(Width.SHORT)
+            .withImportance(Importance.LOW)
+            .withDefault(ARCHIVE_LOG_ONLY_POLL_TIME.toMillis())
+            .withDescription("The interval in milliseconds to wait between polls checking to see if the SCN is in the archive logs.");
+
     public static final Field LOB_ENABLED = Field.create("lob.enabled")
             .withDisplayName("Specifies whether the connector supports mining LOB fields and operations")
             .withType(Type.BOOLEAN)
@@ -285,7 +298,13 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
     public static final Field LOG_MINING_BUFFER_TYPE = Field.create("log.mining.buffer.type")
             .withDisplayName("Controls which buffer type implementation to be used")
             .withEnum(LogMiningBufferType.class, LogMiningBufferType.MEMORY)
-            .withImportance(Importance.LOW);
+            .withImportance(Importance.LOW)
+            .withDescription("The buffer type controls how the connector manages buffering transaction data." + System.lineSeparator() +
+                    System.lineSeparator() +
+                    "memory - Uses the JVM process' heap to buffer all transaction data." + System.lineSeparator() +
+                    System.lineSeparator() +
+                    "infinispan - This option uses an embedded Infinispan cache to buffer transaction data and persist it to disk." +
+                    " Use the log.mining.buffer.location property to define the location for storing cache files.");
 
     public static final Field LOG_MINING_BUFFER_LOCATION = Field.create("log.mining.buffer.location")
             .withDisplayName("Location where Infinispan stores buffer caches")
@@ -303,6 +322,26 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
             .withImportance(Importance.LOW)
             .withDescription("When set to true the underlying buffer cache is not retained when the connector is stopped. " +
                     "When set to false (the default), the buffer cache is retained across restarts.");
+
+    public static final Field LOG_MINING_SCN_GAP_DETECTION_GAP_SIZE_MIN = Field.create("log.mining.scn.gap.detection.gap.size.min")
+            .withDisplayName("SCN gap size used to detect SCN gap")
+            .withType(Type.LONG)
+            .withWidth(Width.SHORT)
+            .withImportance(Importance.LOW)
+            .withDefault(DEFAULT_SCN_GAP_SIZE)
+            .withDescription("Used for SCN gap detection, if the difference between current SCN and previous end SCN is " +
+                    "bigger than this value, and the time difference of current SCN and previous end SCN is smaller than " +
+                    "log.mining.scn.gap.detection.time.interval.max.ms, consider it a SCN gap.");
+
+    public static final Field LOG_MINING_SCN_GAP_DETECTION_TIME_INTERVAL_MAX_MS = Field.create("log.mining.scn.gap.detection.time.interval.max.ms")
+            .withDisplayName("Timer interval used to detect SCN gap")
+            .withType(Type.LONG)
+            .withWidth(Width.SHORT)
+            .withImportance(Importance.LOW)
+            .withDefault(DEFAULT_SCN_GAP_TIME_INTERVAL)
+            .withDescription("Used for SCN gap detection, if the difference between current SCN and previous end SCN is " +
+                    "bigger than log.mining.scn.gap.detection.gap.size.min, and the time difference of current SCN and previous end SCN is smaller than " +
+                    " this value, consider it a SCN gap.");
 
     private static final ConfigDefinition CONFIG_DEFINITION = HistorizedRelationalDatabaseConnectorConfig.CONFIG_DEFINITION.edit()
             .name("Oracle")
@@ -346,7 +385,11 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
                     LOG_MINING_ARCHIVE_DESTINATION_NAME,
                     LOG_MINING_BUFFER_TYPE,
                     LOG_MINING_BUFFER_LOCATION,
-                    LOG_MINING_BUFFER_DROP_ON_STOP)
+                    LOG_MINING_BUFFER_DROP_ON_STOP,
+                    LOG_MINING_ARCHIVE_LOG_ONLY_SCN_POLL_INTERVAL_MS,
+                    LOG_MINING_SCN_GAP_DETECTION_GAP_SIZE_MIN,
+                    LOG_MINING_SCN_GAP_DETECTION_TIME_INTERVAL_MAX_MS,
+                    UNAVAILABLE_VALUE_PLACEHOLDER)
             .create();
 
     /**
@@ -388,12 +431,15 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
     private final Duration logMiningSleepTimeIncrement;
     private final Duration logMiningTransactionRetention;
     private final boolean archiveLogOnlyMode;
+    private final Duration archiveLogOnlyScnPollTime;
     private final boolean lobEnabled;
     private final Set<String> logMiningUsernameExcludes;
     private final String logMiningArchiveDestinationName;
     private final LogMiningBufferType logMiningBufferType;
     private final String logMiningBufferLocation;
     private final boolean logMiningBufferDropOnStop;
+    private final int logMiningScnGapDetectionGapSizeMin;
+    private final int logMiningScnGapDetectionTimeIntervalMaxMs;
 
     public OracleConnectorConfig(Configuration config) {
         super(OracleConnector.class, config, config.getString(SERVER_NAME), new SystemTablesPredicate(config), x -> x.schema() + "." + x.table(), true,
@@ -434,6 +480,9 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
         this.logMiningBufferType = LogMiningBufferType.parse(config.getString(LOG_MINING_BUFFER_TYPE));
         this.logMiningBufferLocation = config.getString(LOG_MINING_BUFFER_LOCATION);
         this.logMiningBufferDropOnStop = config.getBoolean(LOG_MINING_BUFFER_DROP_ON_STOP);
+        this.archiveLogOnlyScnPollTime = Duration.ofMillis(config.getInteger(LOG_MINING_ARCHIVE_LOG_ONLY_SCN_POLL_INTERVAL_MS));
+        this.logMiningScnGapDetectionGapSizeMin = config.getInteger(LOG_MINING_SCN_GAP_DETECTION_GAP_SIZE_MIN);
+        this.logMiningScnGapDetectionTimeIntervalMaxMs = config.getInteger(LOG_MINING_SCN_GAP_DETECTION_TIME_INTERVAL_MAX_MS);
     }
 
     private static String toUpperCase(String property) {
@@ -939,10 +988,18 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
 
     /**
      *
-     * @return int The default SCN interval used when mining redo/archive logs
+     * @return int Scn gap size for SCN gap detection
      */
-    public int getLogMiningBatchSizeDefault() {
-        return logMiningBatchSizeDefault;
+    public int getLogMiningScnGapDetectionGapSizeMin() {
+        return logMiningScnGapDetectionGapSizeMin;
+    }
+
+    /**
+     *
+     * @return int Time interval for SCN gap detection
+     */
+    public int getLogMiningScnGapDetectionTimeIntervalMaxMs() {
+        return logMiningScnGapDetectionTimeIntervalMaxMs;
     }
 
     /**
@@ -992,6 +1049,13 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
     }
 
     /**
+     * @return the duration that archive log only will use to wait between polling scn availability
+     */
+    public Duration getArchiveLogOnlyScnPollTime() {
+        return archiveLogOnlyScnPollTime;
+    }
+
+    /**
      * @return true if LOB fields are to be captured; false otherwise to not capture LOB fields.
      */
     public boolean isLobEnabled() {
@@ -1031,6 +1095,14 @@ public class OracleConnectorConfig extends HistorizedRelationalDatabaseConnector
      */
     public boolean isLogMiningBufferDropOnStop() {
         return logMiningBufferDropOnStop;
+    }
+
+    /**
+     *
+     * @return int The default SCN interval used when mining redo/archive logs
+     */
+    public int getLogMiningBatchSizeDefault() {
+        return logMiningBatchSizeDefault;
     }
 
     @Override

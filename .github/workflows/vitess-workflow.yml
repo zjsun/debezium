@@ -2,6 +2,9 @@ name: Build Connector Vitess
 
 on:
   push:
+    branches:
+      - master
+      - 1.*
     paths:
       - 'debezium-core/**'
       - 'debezium-api/**'
@@ -10,6 +13,9 @@ on:
       - 'pom.xml'
       - '.github/workflows/vitess-workflow.yml'
   pull_request:
+    branches:
+      - master
+      - 1.*
     paths:
       - 'debezium-core/**'
       - 'debezium-api/**'

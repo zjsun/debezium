@@ -1131,7 +1131,7 @@ public class PostgresConnectorIT extends AbstractConnectorTest {
 
     @Test
     @FixFor("DBZ-1962")
-    public void shouldTakeColumnWhitelistFilterIntoAccount() throws Exception {
+    public void shouldTakeColumnIncludeListFilterIntoAccount() throws Exception {
         String setupStmt = SETUP_TABLES_STMT +
                 "ALTER TABLE s1.a ADD COLUMN bb integer;" +
                 "ALTER TABLE s1.a ADD COLUMN cc char(12);" +
@@ -2299,7 +2299,8 @@ public class PostgresConnectorIT extends AbstractConnectorTest {
         waitForStreamingRunning();
 
         // Check that publication was created
-        assertTrue(TestHelper.publicationExists());
+        Awaitility.await("Wait until publication is created").atMost(TestHelper.waitTimeForRecords(), TimeUnit.SECONDS)
+                .until(TestHelper::publicationExists);
 
         // Stop connector, drop publication
         stopConnector();
@@ -2311,7 +2312,8 @@ public class PostgresConnectorIT extends AbstractConnectorTest {
         waitForStreamingRunning();
 
         // Check that publication was created
-        assertTrue(TestHelper.publicationExists());
+        Awaitility.await("Wait until publication is created").atMost(TestHelper.waitTimeForRecords(), TimeUnit.SECONDS)
+                .until(TestHelper::publicationExists);
 
         // Stop Connector and check log messages
         stopConnector(value -> {

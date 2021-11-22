@@ -5,6 +5,7 @@
 = {prodname} connector for SQL Server
 
 :context: sqlserver
+:mbean-name: sql_server
 ifdef::community[]
 
 :toc:
@@ -157,22 +158,25 @@ The connector is able to detect whether CDC is enabled or disabled for included 
 [[sqlserver-topic-names]]
 === Topic names
 
-The SQL Server connector writes events for all `INSERT`, `UPDATE`, and `DELETE` operations for a specific table to a single Kafka topic.
-By default, the Kafka topic name takes the form _serverName_._schemaName_._tableName_.
+By default, the SQL Server connector writes events for all `INSERT`, `UPDATE`, and `DELETE` operations that occur in a table to a single Apache Kafka topic that is specific to that table.
+The connector uses the following convention to name change event topics:
+`_<serverName>_._<schemaName>_._<tableName>_`
+
 The following list provides definitions for the components of the default name:
 
-_serverName_:: The logical name of the connector, as specified by the `database.server.name` configuration property.
+_serverName_:: The logical name of the server, as specified by the xref:sqlserver-property-database-server-name[`database.server.name`] configuration property.
 _schemaName_:: The name of the database schema in which the change event occurred.
 _tableName_:: The name of the database table in which the change event occurred.
 
-For example, suppose that `fulfillment` is the logical server name in the configuration for a connector that is capturing changes in a SQL Server installation.
-The server has an `inventory` database with the schema name `dbo`, and the database contains tables with the names `products`, `products_on_hand`, `customers`, and `orders`.
-The connector would stream records to the following Kafka topics:
+For example, if `fulfillment` is the server name, and `dbo` is the schema name, and the database contains tables with the names `products`, `products_on_hand`, `customers`, and `orders`,
+the connector would stream change event records to the following Kafka topics:
 
 * `fulfillment.dbo.products`
 * `fulfillment.dbo.products_on_hand`
 * `fulfillment.dbo.customers`
 * `fulfillment.dbo.orders`
+
+The connector applies similar naming conventions to label its internal database history topics, xref:about-the-debezium-sqlserver-connector-schema-change-topic[schema change topics], and xref:sqlserver-transaction-metadata[transaction metadata topics].
 
 If the default topic name do not meet your requirements, you can configure custom topic names.
 To configure custom topic names, you specify regular expressions in the logical topic routing SMT.
@@ -182,12 +186,27 @@ For more information about using the logical topic routing SMT to customize topi
 // Type: concept
 // ModuleID: how-the-debezium-sql-server-connector-uses-the-schema-change-topic
 // Title: How the {prodname} SQL Server connector uses the schema change topic
+[[about-the-debezium-sqlserver-connector-schema-change-topic]]
 === Schema change topic
 
-For each table for which CDC is enabled, the {prodname} SQL Server connector stores a history of schema changes in a database history topic.
-This topic reflects an internal connector state and you should not use it directly.
-Application that require notifications about schema changes, should obtain the information from the public schema change topic.
-The connector writes all of these events to a Kafka topic named `<serverName>`, where `serverName` is the name of the connector that is specified in the database.server.name configuration property.
+For each table for which CDC is enabled, the {prodname} SQL Server connector stores a history of the schema change events that are applied to captured tables in the database.
+The connector writes schema change events to a Kafka topic named `_<serverName>_`, where `_serverName_` is the logical server name that is specified in the xref:sqlserver-property-database-server-name[`database.server.name`] configuration property.
+
+Messages that the connector sends to the schema change topic contain a payload, and, optionally, also contain the schema of the change event message.
+The payload of a schema change event message includes the following elements:
+
+`databaseName`:: The name of the database to which the statements are applied.
+The value of `databaseName` serves as the message key. 
+`tableChanges`::  A structured representation of the entire table schema after the schema change.
+The `tableChanges` field contains an array that includes entries for each column of the table.
+Because the structured representation presents data in JSON or Avro format, consumers can easily read messages without first processing them through a DDL parser.
+
+[IMPORTANT]
+====
+When the connector is configured to capture a table, it stores the history of the table's schema changes not only in the schema change topic, but also in an internal database history topic.
+The internal database history topic is for connector use only and it is not intended for direct use by consuming applications.
+Ensure that applications that require notifications about schema changes consume that information only from the schema change topic.
+====
 
 [WARNING]
 ====
@@ -200,7 +219,9 @@ The format of the messages that a connector emits to its schema change topic is 
 * You disable CDC for a table.
 * You alter the structure of a table for which CDC is enabled by following the {link-prefix}:{link-sqlserver-connector}#sqlserver-schema-evolution[schema evolution procedure].
 
-A message to the schema change topic contains a logical representation of the table schema, for example:
+.Example: Message emitted to the SQL Server connector schema change topic
+The following example shows a message in the schema change topic.
+The message contains a logical representation of the table schema.
 
 [source,json,indent=0,subs="+attributes"]
 ----
@@ -311,7 +332,9 @@ A message to the schema change topic contains a logical representation of the ta
 
 |2
 |`ddl`
-|Always `null` for the SQL Server connector. For other connectors, this field contains the DDL responsible for the schema change. This DDL is not available to SQL Server connectors.
+|Always `null` for the SQL Server connector.
+For other connectors, this field contains the DDL responsible for the schema change.
+This DDL is not available to SQL Server connectors.
 
 |3
 |`tableChanges`
@@ -984,6 +1007,13 @@ When a row is deleted, the _delete_ event value still works with log compaction,
 === Transaction metadata
 
 {prodname} can generate events that represent transaction boundaries and that enrich data change event messages.
+
+[NOTE]
+.Limits on when {prodname} receives transaction metadata
+====
+{prodname} registers and receives metadata only for transactions that occur after you deploy the connector.
+Metadata for transactions that occur before you deploy the connector is not available.
+====
 
 Database transactions are represented by a statement block that is enclosed between the `BEGIN` and `END` keywords.
 {prodname} generates transaction boundary events for the `BEGIN` and `END` delimiters in every transaction.
@@ -1974,11 +2004,11 @@ The following configuration properties are _required_ unless a default value is 
 |Description
 
 |[[sqlserver-property-name]]<<sqlserver-property-name, `+name+`>>
-|
+|No default
 |Unique name for the connector. Attempting to register again with the same name will fail. (This property is required by all Kafka Connect connectors.)
 
 |[[sqlserver-property-connector-class]]<<sqlserver-property-connector-class, `+connector.class+`>>
-|
+|No default
 |The name of the Java class for the connector. Always use a value of `io.debezium.connector.sqlserver.SqlServerConnector` for the SQL Server connector.
 
 |[[sqlserver-property-tasks-max]]<<sqlserver-property-tasks-max, `+tasks.max+`>>
@@ -1986,7 +2016,7 @@ The following configuration properties are _required_ unless a default value is 
 |The maximum number of tasks that should be created for this connector. The SQL Server connector always uses a single task and therefore does not use this value, so the default is always acceptable.
 
 |[[sqlserver-property-database-hostname]]<<sqlserver-property-database-hostname, `+database.hostname+`>>
-|
+|No default
 |IP address or hostname of the SQL Server database server.
 
 |[[sqlserver-property-database-port]]<<sqlserver-property-database-port, `+database.port+`>>
@@ -1994,20 +2024,20 @@ The following configuration properties are _required_ unless a default value is 
 |Integer port number of the SQL Server database server.
 
 |[[sqlserver-property-database-user]]<<sqlserver-property-database-user, `+database.user+`>>
-|
+|No default
 |Username to use when connecting to the SQL Server database server.
 
 |[[sqlserver-property-database-password]]<<sqlserver-property-database-password, `+database.password+`>>
-|
+|No default
 |Password to use when connecting to the SQL Server database server.
 
 |[[sqlserver-property-database-dbname]]<<sqlserver-property-database-dbname, `+database.dbname+`>>
-|
+|No default
 |The name of the SQL Server database from which to stream the changes
 Must not be used with `database.names`.
 
 |[[sqlserver-property-database-names]]<<sqlserver-property-database-names, `+database.names+`>>
-|
+|No default
 |The comma-separated list of the SQL Server database names from which to stream the changes.
 Currently, only one database name is supported. Must not be used with `database.dbname`.
 
@@ -2019,18 +2049,18 @@ incompatible with the default configuration with no upgrade or downgrade path:
   as part of the fully-qualified table name.
 
 |[[sqlserver-property-database-server-name]]<<sqlserver-property-database-server-name, `+database.server.name+`>>
-|
+|No default
 |Logical name that identifies and provides a namespace for the SQL Server database server that you want {prodname} to capture. The logical name should be unique across all other connectors, since it is used as a prefix for all Kafka topic names emanating from this connector.
 Only alphanumeric characters, hyphens, dots and underscores must be used.
 
 |[[sqlserver-property-table-include-list]]<<sqlserver-property-table-include-list, `+table.include.list+`>>
-|
+|No default
 |An optional comma-separated list of regular expressions that match fully-qualified table identifiers for tables that you want {prodname} to capture; any table that is not included in `table.include.list` is excluded from capture. Each identifier is of the form _schemaName_._tableName_.
 By default, the connector captures all non-system tables for the designated schemas.
 Must not be used with `table.exclude.list`.
 
 |[[sqlserver-property-table-exclude-list]]<<sqlserver-property-table-exclude-list, `+table.exclude.list+`>>
-|
+|No default
 |An optional comma-separated list of regular expressions that match fully-qualified table identifiers for the tables that you want to exclude from being captured; {prodname} captures all tables that are not included in `table.exclude.list`.
 Each identifier is of the form _schemaName_._tableName_. Must not be used with `table.include.list`.
 
@@ -2052,7 +2082,7 @@ Do not also set the `column.include.list` property.
 |[[sqlserver-property-column-mask-hash]]<<sqlserver-property-column-mask-hash, `column.mask.hash._hashAlgorithm_.with.salt._salt_`>>
 |_n/a_
 |An optional, comma-separated list of regular expressions that match the fully-qualified names of character-based columns.
-Fully-qualified names for columns are of the form _schemaName_._tableName_._columnName_.
+Fully-qualified names for columns are of the form _`<schemaName>_._<tableName>_._<columnName>`.
 In the resulting change event record, the values for the specified columns are replaced with pseudonyms. +
 
 A pseudonym consists of the hashed value that results from applying the specified _hashAlgorithm_ and _salt_.
@@ -2123,9 +2153,34 @@ See {link-prefix}:{link-sqlserver-connector}#sqlserver-data-types[SQL Server dat
 
 |[[sqlserver-property-message-key-columns]]<<sqlserver-property-message-key-columns, `+message.key.columns+`>>
 |_n/a_
-| A semi-colon list of regular expressions that match fully-qualified tables and columns to map a primary key. +
-Each item (regular expression) must match the fully-qualified `<fully-qualified table>:<a comma-separated list of columns>` representing the custom key. +
-Fully-qualified tables could be defined as _schemaName_._tableName_.
+|A list of expressions that specify the columns that the connector uses to form custom message keys for change event records that it publishes to the Kafka topics for specified tables.
+
+By default, {prodname} uses the primary key column of a table as the message key for records that it emits.
+In place of the default, or to specify a key for tables that lack a primary key, you can configure custom message keys based on one or more columns. +
+ +
+To establish a custom message key for a table, list the table, followed by the columns to use as the message key.
+Each list entry takes the following format: +
+ +
+`_<fully-qualified_tableName>_:_<keyColumn>_,_<keyColumn>_` +
+ +
+To base a table key on multiple column names, insert commas between the column names.
+
+Each fully-qualified table name is a regular expression in the following format: +
+ +
+`_<schemaName>_._<tableName>_` +
+ +
+The property can include entries for multiple tables.
+Use a semicolon to separate table entries in the list. +
+ +
+The following example sets the message key for the tables `inventory.customers` and `purchase.orders`: +
+ +
+`inventory.customers:pk1,pk2;(.*).purchaseorders:pk3,pk4` +
+ +
+For the table `inventory.customer`, the columns `pk1` and `pk2` are specified as the message key.
+For the `purchaseorders` tables in any schema, the columns `pk3` and `pk4` server as the message key.
+
+There is no limit to the number of columns that you use to create custom message keys.
+However, it's best to use the minimum number that are required to specify a unique key.
 
 |[[sqlserver-property-binary-handling-mode]]<<sqlserver-property-binary-handling-mode, `+binary.handling.mode+`>>
 |bytes
@@ -2217,7 +2272,7 @@ Disabled by default.
 The topic is named according to the pattern `<heartbeat.topics.prefix>.<server.name>`.
 
 |[[sqlserver-property-snapshot-delay-ms]]<<sqlserver-property-snapshot-delay-ms, `+snapshot.delay.ms+`>>
-|
+|No default
 |An interval in milli-seconds that the connector should wait before taking a snapshot after starting up; +
 Can be used to avoid snapshot interruptions when starting multiple connectors in a cluster, which may cause re-balancing of connectors.
 
@@ -2227,7 +2282,7 @@ Can be used to avoid snapshot interruptions when starting multiple connectors in
 The connector will read the table contents in multiple batches of this size. Defaults to 2000.
 
 |[[sqlserver-property-query-fetch-size]]<<sqlserver-property-query-fetch-size, `+query.fetch.size+`>>
-|
+|No default
 |Specifies the number of rows that will be fetched for each database round-trip of a given query.
 Defaults to the JDBC driver's default fetch size.
 
@@ -2237,11 +2292,34 @@ Defaults to the JDBC driver's default fetch size.
 When set to `0` the connector will fail immediately when it cannot obtain the lock. Value `-1` indicates infinite waiting.
 
 |[[sqlserver-property-snapshot-select-statement-overrides]]<<sqlserver-property-snapshot-select-statement-overrides, `+snapshot.select.statement.overrides+`>>
-|
-|Controls which rows from tables are included in snapshot. +
-This property contains a comma-separated list of fully-qualified tables _(SCHEMA_NAME.TABLE_NAME)_. Select statements for the individual tables are specified in further configuration properties, one for each table, identified by the id `snapshot.select.statement.overrides.[SCHEMA_NAME].[TABLE_NAME]`. The value of those properties is the SELECT statement to use when retrieving data from the specific table during snapshotting. _A possible use case for large append-only tables is setting a specific point where to start (resume) snapshotting, in case a previous snapshotting was interrupted._ +
-*Note*: This setting has impact on snapshots only. Events captured during log reading are not affected by it.
+|No default
+|Specifies the table rows to include in a snapshot.
+Use the property if you want a snapshot to include only a subset of the rows in a table.
+This property affects snapshots only.
+It does not apply to events that the connector reads from the log.
 
+The property contains a comma-separated list of fully-qualified table names in the form `_<schemaName>.<tableName>_`. For example, +
+ +
+`+"snapshot.select.statement.overrides": "inventory.products,customers.orders"+` +
+ +
+For each table in the list, add a further configuration property that specifies the `SELECT` statement for the connector to run on the table when it takes a snapshot.
+The specified `SELECT` statement determines the subset of table rows to include in the snapshot.
+Use the following format to specify the name of this `SELECT` statement property: +
+ +
+`snapshot.select.statement.overrides._<schemaName>_._<tableName>_`.
+For example,
+`snapshot.select.statement.overrides.customers.orders`. +
+ +
+Example:
+
+From a `customers.orders` table that includes the soft-delete column, `delete_flag`, add the following properties if you want a snapshot to include only those records that are not soft-deleted:
+
+----
+"snapshot.select.statement.overrides": "customer.orders",
+"snapshot.select.statement.overrides.customer.orders": "SELECT * FROM [customers].[orders] WHERE delete_flag = 0 ORDER BY id DESC"
+----
+
+In the resulting snapshot, the connector includes only the records for which `delete_flag = 0`.
 ifdef::community[]
 |[[sqlserver-property-source-struct-version]]<<sqlserver-property-source-struct-version, `+source.struct.version+`>>
 |v2
@@ -2270,16 +2348,21 @@ See {link-prefix}:{link-sqlserver-connector}#sqlserver-transaction-metadata[Tran
 |The number of milli-seconds to wait before restarting a connector after a retriable error occurs.
 
 |[[sqlserver-property-skipped-operations]]<<sqlserver-property-skipped-operations, `+skipped.operations+`>>
-|
+|No default
 | comma-separated list of operation types that will be skipped during streaming.
 The operations include: `c` for inserts/create, `u` for updates, and `d` for deletes.
 By default, no operations are skipped.
 
 |[[sqlserver-property-signal-data-collection]]<<sqlserver-property-signal-data-collection, `+signal.data.collection+`>>
-|
+|No default
 | Fully-qualified name of the data collection that is used to send {link-prefix}:{link-signalling}[signals] to the connector.
 The name format is _database_name.schema-name.table-name_.
 
+|[[sqlserver-property-max-iteration-transactions]]<<sqlserver-property-max-iteration-transactions, `+max.iteration.transactions+`>>
+|0
+|Specifies the maximum number of transactions per iteration to be used to reduce the memory footprint when streaming changes from multiple tables in a database.
+When set to `0` (the default), the connector uses the current maximum LSN as the range to fetch changes from.
+When set to a value greater than zero, the connector uses the n-th LSN specified by this setting as the range to fetch changes from.
 |===
 
 [id="debezium-{context}-connector-database-history-configuration-properties"]
@@ -2485,8 +2568,6 @@ For information about how to expose the preceding metrics through JMX, see the {
 [[sqlserver-snapshot-metrics]]
 === Snapshot metrics
 
-The *MBean* is `debezium.sql_server:type=connector-metrics,context=snapshot,server=_<database.server.name>_`.
-
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-snapshot-metrics.adoc[leveloffset=+1]
 
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-incremental-snapshot-metrics.adoc[leveloffset=+1]
@@ -2497,8 +2578,6 @@ include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-increment
 [[sqlserver-streaming-metrics]]
 === Streaming metrics
 
-The *MBean* is `debezium.sql_server:type=connector-metrics,context=streaming,server=_<database.server.name>_`.
-
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-streaming-metrics.adoc[leveloffset=+1]
 
 // Type: reference
@@ -2506,7 +2585,5 @@ include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-streaming
 // Title: {prodname} SQL Server connector schema history metrics
 [[sqlserver-schema-history-metrics]]
 === Schema history metrics
-
-The *MBean* is `debezium.sql_server:type=connector-metrics,context=schema-history,server=_<database.server.name>_`.
 
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-schema-history-metrics.adoc[leveloffset=+1]

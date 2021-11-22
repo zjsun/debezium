@@ -19,6 +19,8 @@ import org.junit.Before;
 import org.junit.Test;
 
 import io.debezium.connector.oracle.antlr.OracleDdlParser;
+import io.debezium.connector.oracle.util.TestHelper;
+import io.debezium.doc.FixFor;
 import io.debezium.relational.Column;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
@@ -40,7 +42,8 @@ public class OracleDdlParserTest {
 
     @Before
     public void setUp() {
-        parser = new OracleDdlParser(true, null, null);
+        final OracleConnectorConfig config = new OracleConnectorConfig(TestHelper.defaultConfig().build());
+        parser = new OracleDdlParser(true, null, config.getTableFilters().dataCollectionFilter());
         tables = new Tables();
     }
 
@@ -48,8 +51,10 @@ public class OracleDdlParserTest {
     public void shouldParseCreateAndAlterTable() throws Exception {
         final String createStatement = IoUtil.read(IoUtil.getResourceAsStream("ddl/create_table.sql", null, getClass(), null, null));
         Objects.requireNonNull(createStatement);
+        parser.setCurrentDatabase(PDB_NAME);
+        parser.setCurrentSchema("DEBEZIUM");
         parser.parse(createStatement, tables);
-        Table table = tables.forTable(new TableId(null, null, TABLE_NAME));
+        Table table = tables.forTable(new TableId(PDB_NAME, "DEBEZIUM", TABLE_NAME));
 
         assertThat(tables.size()).isEqualTo(1);
         assertThat(table.retrieveColumnNames()).containsExactly("ID", "COL1", "COL2", "COL3", "COL4", "COL5", "COL6", "COL7", "COL8", "COL9", "COL10", "COL11", "COL12",
@@ -65,9 +70,9 @@ public class OracleDdlParserTest {
         // nvarchar2(255)
         testColumn(table, "COL3", false, Types.NVARCHAR, "NVARCHAR2", 255, null, false, null);
         // char(4)
-        testColumn(table, "COL4", true, Types.CHAR, "CHAR", 1, null, true, null);
+        testColumn(table, "COL4", true, Types.CHAR, "CHAR", 4, null, true, null);
         // nchar(4)
-        testColumn(table, "COL5", true, Types.NCHAR, "NCHAR", 1, 0, true, null);
+        testColumn(table, "COL5", true, Types.NCHAR, "NCHAR", 4, 0, true, null);
         // float(126)
         testColumn(table, "COL6", true, Types.FLOAT, "FLOAT", 126, 0, true, null);
         // date
@@ -87,7 +92,7 @@ public class OracleDdlParserTest {
 
         String ddl = "alter table " + TABLE_NAME + " add (col21 varchar2(20), col22 number(19));";
         parser.parse(ddl, tables);
-        Table alteredTable = tables.forTable(new TableId(null, null, TABLE_NAME));
+        Table alteredTable = tables.forTable(new TableId(PDB_NAME, "DEBEZIUM", TABLE_NAME));
         assertThat(alteredTable.retrieveColumnNames()).containsExactly("ID", "COL1", "COL2", "COL3", "COL4", "COL5", "COL6", "COL7", "COL8", "COL9", "COL10", "COL11",
                 "COL12", "COL13",
                 "COL21",
@@ -106,7 +111,7 @@ public class OracleDdlParserTest {
         }
         ddl = "alter table " + TABLE_NAME + " add (col23 varchar2(20) not null);";
         parser.parse(ddl, tables);
-        alteredTable = tables.forTable(new TableId(null, null, TABLE_NAME));
+        alteredTable = tables.forTable(new TableId(PDB_NAME, "DEBEZIUM", TABLE_NAME));
         assertThat(alteredTable.retrieveColumnNames()).containsExactly("ID", "COL1", "COL2", "COL3", "COL4", "COL5", "COL6", "COL7", "COL8", "COL9", "COL10", "COL11",
                 "COL12", "COL13",
                 "COL21",
@@ -115,7 +120,7 @@ public class OracleDdlParserTest {
 
         ddl = "alter table " + TABLE_NAME + " drop (col22, col23);";
         parser.parse(ddl, tables);
-        alteredTable = tables.forTable(new TableId(null, null, TABLE_NAME));
+        alteredTable = tables.forTable(new TableId(PDB_NAME, "DEBEZIUM", TABLE_NAME));
         assertThat(alteredTable.retrieveColumnNames()).containsExactly("ID", "COL1", "COL2", "COL3", "COL4", "COL5", "COL6", "COL7", "COL8", "COL9", "COL10", "COL11",
                 "COL12", "COL13",
                 "COL21");
@@ -246,6 +251,93 @@ public class OracleDdlParserTest {
         assertThat(columnNames).contains("CHANGE_NO", "SOURCE_INFO", "CHANGED_TIME", "ENTITY_TYPE", "ORGANIZATIONID", "PROCESSED", "TRACKING_ID", "EXPIRY_TIME", "ACTOR",
                 "ENTITY_ID");
         assertThat(table.primaryKeyColumnNames()).containsExactly("CHANGE_NO", "EXPIRY_TIME");
+    }
+
+    @Test
+    @FixFor("DBZ-4135")
+    public void shouldParseAlterTableAddColumnStatement() throws Exception {
+        parser.setCurrentDatabase(PDB_NAME);
+        parser.setCurrentSchema("SCOTT");
+
+        Table table = Table.editor()
+                .tableId(new TableId(PDB_NAME, "SCOTT", "T_DBZ_TEST1"))
+                .addColumn(Column.editor().name("ID").create())
+                .create();
+        tables.overwriteTable(table);
+
+        String SQL = "ALTER TABLE \"SCOTT\".\"T_DBZ_TEST1\" ADD T_VARCHAR2 VARCHAR2(20);";
+        parser.parse(SQL, tables);
+
+        final DdlChanges changes = parser.getDdlChanges();
+        final List<DdlParserListener.EventType> eventTypes = new ArrayList<>();
+        changes.getEventsByDatabase((String dbName, List<DdlParserListener.Event> events) -> {
+            events.forEach(event -> eventTypes.add(event.type()));
+        });
+        assertThat(eventTypes).containsExactly(DdlParserListener.EventType.ALTER_TABLE);
+
+        table = tables.forTable(new TableId(PDB_NAME, "SCOTT", "T_DBZ_TEST1"));
+        List<String> columnNames = table.retrieveColumnNames();
+        assertThat(columnNames).contains("ID", "T_VARCHAR2");
+        assertThat(table.columnWithName("T_VARCHAR2").typeName()).isEqualTo("VARCHAR2");
+        assertThat(table.columnWithName("T_VARCHAR2").length()).isEqualTo(20);
+    }
+
+    @Test
+    @FixFor("DBZ-4135")
+    public void shouldParseAlterTableModifyColumnStatement() throws Exception {
+        parser.setCurrentDatabase(PDB_NAME);
+        parser.setCurrentSchema("SCOTT");
+
+        Table table = Table.editor()
+                .tableId(new TableId(PDB_NAME, "SCOTT", "T_DBZ_TEST1"))
+                .addColumn(Column.editor().name("ID").create())
+                .addColumn(Column.editor().name("T_VARCHAR2").type("VARCHAR2").length(10).create())
+                .create();
+        tables.overwriteTable(table);
+
+        String SQL = "ALTER TABLE \"SCOTT\".\"T_DBZ_TEST1\" MODIFY T_VARCHAR2 VARCHAR2(20);";
+        parser.parse(SQL, tables);
+
+        final DdlChanges changes = parser.getDdlChanges();
+        final List<DdlParserListener.EventType> eventTypes = new ArrayList<>();
+        changes.getEventsByDatabase((String dbName, List<DdlParserListener.Event> events) -> {
+            events.forEach(event -> eventTypes.add(event.type()));
+        });
+        assertThat(eventTypes).containsExactly(DdlParserListener.EventType.ALTER_TABLE);
+
+        table = tables.forTable(new TableId(PDB_NAME, "SCOTT", "T_DBZ_TEST1"));
+        List<String> columnNames = table.retrieveColumnNames();
+        assertThat(columnNames).contains("ID", "T_VARCHAR2");
+        assertThat(table.columnWithName("T_VARCHAR2").typeName()).isEqualTo("VARCHAR2");
+        assertThat(table.columnWithName("T_VARCHAR2").length()).isEqualTo(20);
+    }
+
+    @Test
+    @FixFor("DBZ-4135")
+    public void shouldParseAlterTableDropColumnStatement() throws Exception {
+        parser.setCurrentDatabase(PDB_NAME);
+        parser.setCurrentSchema("SCOTT");
+
+        Table table = Table.editor()
+                .tableId(new TableId(PDB_NAME, "SCOTT", "T_DBZ_TEST1"))
+                .addColumn(Column.editor().name("ID").create())
+                .addColumn(Column.editor().name("T_VARCHAR2").type("VARCHAR2").length(10).create())
+                .create();
+        tables.overwriteTable(table);
+
+        String SQL = "ALTER TABLE \"SCOTT\".\"T_DBZ_TEST1\" DROP COLUMN T_VARCHAR2";
+        parser.parse(SQL, tables);
+
+        final DdlChanges changes = parser.getDdlChanges();
+        final List<DdlParserListener.EventType> eventTypes = new ArrayList<>();
+        changes.getEventsByDatabase((String dbName, List<DdlParserListener.Event> events) -> {
+            events.forEach(event -> eventTypes.add(event.type()));
+        });
+        assertThat(eventTypes).containsExactly(DdlParserListener.EventType.ALTER_TABLE);
+
+        table = tables.forTable(new TableId(PDB_NAME, "SCOTT", "T_DBZ_TEST1"));
+        List<String> columnNames = table.retrieveColumnNames();
+        assertThat(columnNames).contains("ID");
     }
 
     private void testColumn(@NotNull Table table, @NotNull String name, boolean isOptional,

@@ -59,7 +59,7 @@ public class SqlServerConnection extends JdbcConnection {
     private static final Logger LOGGER = LoggerFactory.getLogger(SqlServerConnection.class);
 
     private static final String STATEMENTS_PLACEHOLDER = "#";
-    private static final String DATABASE_NAME_PLACEHOLDER = "[#db]";
+    private static final String DATABASE_NAME_PLACEHOLDER = "#db";
     private static final String GET_MAX_LSN = "SELECT [#db].sys.fn_cdc_get_max_lsn()";
     private static final String GET_MAX_TRANSACTION_LSN = "SELECT MAX(start_lsn) FROM [#db].cdc.lsn_time_mapping WHERE tran_id <> 0x00";
     private static final String GET_NTH_TRANSACTION_LSN_FROM_BEGINNING = "SELECT MAX(start_lsn) FROM (SELECT TOP (?) start_lsn FROM [#db].cdc.lsn_time_mapping WHERE tran_id <> 0x00 ORDER BY start_lsn) as next_lsns";
@@ -74,6 +74,8 @@ public class SqlServerConnection extends JdbcConnection {
     private static final String GET_LIST_OF_CDC_ENABLED_TABLES = "EXEC [#db].sys.sp_cdc_help_change_data_capture";
     private static final String GET_LIST_OF_NEW_CDC_ENABLED_TABLES = "SELECT * FROM [#db].cdc.change_tables WHERE start_lsn BETWEEN ? AND ?";
     private static final Pattern BRACKET_PATTERN = Pattern.compile("[\\[\\]]");
+    private static final String OPENING_QUOTING_CHARACTER = "[";
+    private static final String CLOSING_QUOTING_CHARACTER = "]";
 
     private static final String URL_PATTERN = "jdbc:sqlserver://${" + JdbcConfiguration.HOSTNAME + "}:${" + JdbcConfiguration.PORT + "}";
 
@@ -89,26 +91,13 @@ public class SqlServerConnection extends JdbcConnection {
      * @param config {@link Configuration} instance, may not be null.
      * @param sourceTimestampMode strategy for populating {@code source.ts_ms}.
      * @param valueConverters {@link SqlServerValueConverters} instance
-     */
-    public SqlServerConnection(Configuration config, SourceTimestampMode sourceTimestampMode,
-                               SqlServerValueConverters valueConverters, boolean multiPartitionMode) {
-        this(config, sourceTimestampMode, valueConverters, null, Collections.emptySet(),
-                multiPartitionMode);
-    }
-
-    /**
-     * Creates a new connection using the supplied configuration.
-     *
-     * @param config {@link Configuration} instance, may not be null.
-     * @param sourceTimestampMode strategy for populating {@code source.ts_ms}.
-     * @param valueConverters {@link SqlServerValueConverters} instance
      * @param classLoaderSupplier class loader supplier
      * @param skippedOperations a set of {@link Envelope.Operation} to skip in streaming
      */
     public SqlServerConnection(Configuration config, SourceTimestampMode sourceTimestampMode,
                                SqlServerValueConverters valueConverters, Supplier<ClassLoader> classLoaderSupplier,
                                Set<Envelope.Operation> skippedOperations, boolean multiPartitionMode) {
-        super(config, createConnectionFactory(multiPartitionMode), classLoaderSupplier);
+        super(config, createConnectionFactory(multiPartitionMode), classLoaderSupplier, OPENING_QUOTING_CHARACTER, CLOSING_QUOTING_CHARACTER);
 
         if (config().hasKey(SERVER_TIMEZONE_PROP_NAME)) {
             LOGGER.warn("The '{}' option is deprecated and is not taken into account", SERVER_TIMEZONE_PROP_NAME);

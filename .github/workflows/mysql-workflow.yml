@@ -2,6 +2,9 @@ name: Build MySQL Connector
 
 on:
   push:
+    branches:
+      - master
+      - 1.*
     paths:
       - 'support/checkstyle/**'
       - 'support/ide-configs/**'
@@ -20,6 +23,9 @@ on:
       - 'pom.xml'
       - '.github/workflows/mysql-workflow.yml'
   pull_request:
+    branches:
+      - master
+      - 1.*
     paths:
       - 'support/checkstyle/**'
       - 'support/ide-configs/**'

@@ -2,6 +2,9 @@ name: Build Quarkus Outbox
 
 on:
   push:
+    branches:
+      - master
+      - 1.*
     paths:
       - 'support/checkstyle/**'
       - 'support/ide-configs/**'
@@ -19,6 +22,9 @@ on:
       - 'pom.xml'
       - '.github/workflows/quarkus-outbox-workflow.yml'
   pull_request:
+    branches:
+      - master
+      - 1.*
     paths:
       - 'support/checkstyle/**'
       - 'support/ide-configs/**'

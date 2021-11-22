@@ -90,6 +90,85 @@ public class MySqlAntlrDdlParserTest {
     }
 
     @Test
+    @FixFor("DBZ-4166")
+    public void shouldAllowIndexExpressionForTable() {
+        String ddlSql = "CREATE TABLE `cached_sales` (\n"
+                + "`id` bigint unsigned NOT NULL AUTO_INCREMENT,\n"
+                + "`sale_id` bigint unsigned NOT NULL,\n"
+                + "`sale_item_id` bigint unsigned NOT NULL,\n"
+                + "`retailer_id` bigint unsigned DEFAULT NULL,\n"
+                + "`retailer_branch_id` bigint unsigned DEFAULT NULL,\n"
+                + "`retailer_branch_location_id` bigint unsigned NOT NULL,\n"
+                + "`sales_area_id` bigint unsigned DEFAULT NULL,\n"
+                + "`product_id` bigint unsigned DEFAULT NULL,\n"
+                + "`product_variation_id` bigint unsigned NOT NULL,\n"
+                + "`season_ids` json DEFAULT NULL,\n"
+                + "`category_ids` json DEFAULT NULL,\n"
+                + "`color_ids` json DEFAULT NULL,\n"
+                + "`size_ids` json DEFAULT NULL,\n"
+                + "`gender_ids` json DEFAULT NULL,\n"
+                + "`city` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,\n"
+                + "`country_code` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,\n"
+                + "`location_type` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,\n"
+                + "`edi_enabled` tinyint(1) DEFAULT NULL,\n"
+                + "`quantity` int DEFAULT NULL,\n"
+                + "`brand_normalized_purchase_price_net` int DEFAULT NULL,\n"
+                + "`brand_normalized_selling_price_gross` int DEFAULT NULL,\n"
+                + "`item_updated_at` datetime DEFAULT NULL,\n"
+                + "`sold_at` datetime DEFAULT NULL,\n"
+                + "`created_at` timestamp NULL DEFAULT NULL,\n"
+                + "`updated_at` timestamp NULL DEFAULT NULL,\n"
+                + "`tenant_id` varchar(255) COLLATE utf8mb4_unicode_ci DEFAULT NULL,\n"
+                + "PRIMARY KEY (`id`),\n"
+                + "UNIQUE KEY `cached_sales_sale_item_id_unique` (`sale_item_id`),\n"
+                + "KEY `cached_sales_sale_id_foreign` (`sale_id`),\n"
+                + "KEY `cached_sales_retailer_id_foreign` (`retailer_id`),\n"
+                + "KEY `cached_sales_retailer_branch_id_foreign` (`retailer_branch_id`),\n"
+                + "KEY `cached_sales_retailer_branch_location_id_foreign` (`retailer_branch_location_id`),\n"
+                + "KEY `cached_sales_sales_area_id_foreign` (`sales_area_id`),\n"
+                + "KEY `cached_sales_product_id_foreign` (`product_id`),\n"
+                + "KEY `cached_sales_product_variation_id_foreign` (`product_variation_id`),\n"
+                + "KEY `cached_sales_city_index` (`city`),\n"
+                + "KEY `cached_sales_country_code_index` (`country_code`),\n"
+                + "KEY `cached_sales_location_type_index` (`location_type`),\n"
+                + "KEY `cached_sales_sold_at_index` (`sold_at`),\n"
+                + "KEY `cached_sales_season_ids_index` ((cast(json_extract(`season_ids`,_utf8mb4'$') as unsigned array))),\n"
+                + "KEY `cached_sales_category_ids_index` ((cast(json_extract(`category_ids`,_utf8mb4'$') as unsigned array))),\n"
+                + "KEY `cached_sales_color_ids_index` ((cast(json_extract(`color_ids`,_utf8mb4'$') as unsigned array))),\n"
+                + "KEY `cached_sales_size_ids_index` ((cast(json_extract(`size_ids`,_utf8mb4'$') as unsigned array))),\n"
+                + "KEY `cached_sales_gender_ids_index` (((cast(json_extract(`gender_ids`,_utf8mb4'$') as unsigned array))))\n"
+                + ") ENGINE=InnoDB AUTO_INCREMENT=13594436 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+        parser.parse(ddlSql, tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+
+        ddlSql = "CREATE TABLE tbl (\n"
+                + "col1 LONGTEXT,\n"
+                + "data JSON,\n"
+                + "INDEX idx1 ((SUBSTRING(col1, 1, 10))),\n"
+                + "INDEX idx2 ((CAST(JSON_EXTRACT(data, _utf8mb4'$') AS UNSIGNED ARRAY))),\n"
+                + "INDEX ((CAST(data->>'$.name' AS CHAR(30))))\n"
+                + ")";
+        parser.parse(ddlSql, tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+    }
+
+    @Test
+    @FixFor("DBZ-4229")
+    public void shouldProcessQueryWithoutFromStatement() {
+        String sp = "CREATE DEFINER=`system_user`@`%` PROCEDURE `update_order`(IN orderID bigint(11))\n" +
+                "BEGIN  insert into order_config(order_id, attribute, value, performer)\n" +
+                "    SELECT orderID, 'first_attr', 'true', 'AppConfig'\n" +
+                "    WHERE NOT EXISTS (select 1 from inventory.order_config t1 where t1.order_id = orderID and t1.attribute = 'first_attr') OR\n" +
+                "        EXISTS (select 1 from inventory.order_config p2 where p2.order_id = orderID and p2.attribute = 'first_attr' and p2.performer = 'AppConfig')\n" +
+                "    ON DUPLICATE KEY UPDATE value = 'true',\n" +
+                "                            performer = 'AppConfig'; -- Enable second_attr for order\n" +
+                "END";
+        parser.parse(sp, tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+        assertThat(tables.size()).isEqualTo(0);
+    }
+
+    @Test
     @FixFor("DBZ-3020")
     public void shouldProcessExpressionWithDefault() {
         String ddl = "create table rack_shelf_bin ( id int unsigned not null auto_increment unique primary key, bin_volume decimal(20, 4) default (bin_len * bin_width * bin_height));";
@@ -452,12 +531,12 @@ public class MySqlAntlrDdlParserTest {
     @Test
     @FixFor("DBZ-1220")
     public void shouldParseFloatVariants() {
-        final String ddl = "CREATE TABLE mytable (id SERIAL, f1 FLOAT, f2 FLOAT(4), f3 FLOAT(7,4));";
+        final String ddl = "CREATE TABLE mytable (id SERIAL, f1 FLOAT, f2 FLOAT(4), f3 FLOAT(7,4), f4 FLOAT(7.4));";
         parser.parse(ddl, tables);
         assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
 
         final Table table = tables.forTable(null, null, "mytable");
-        assertThat(table.columns().size()).isEqualTo(4);
+        assertThat(table.columns().size()).isEqualTo(5);
 
         final Column f1 = table.columnWithName("f1");
         assertThat(f1.typeName()).isEqualTo("FLOAT");
@@ -473,6 +552,46 @@ public class MySqlAntlrDdlParserTest {
         assertThat(f3.typeName()).isEqualTo("FLOAT");
         assertThat(f3.length()).isEqualTo(7);
         assertThat(f3.scale().get()).isEqualTo(4);
+
+        final Column f4 = table.columnWithName("f4");
+        assertThat(f4.typeName()).isEqualTo("FLOAT");
+        assertThat(f4.length()).isEqualTo(7);
+        assertThat(f4.scale().isPresent()).isFalse();
+    }
+
+    @Test
+    @FixFor("DBZ-3984")
+    public void shouldParseDecimalVariants() {
+        String ddl = "CREATE TABLE foo (c1 decimal(19), c2 decimal(19.5), c3 decimal(0.0), c4 decimal(0.2), c5 decimal(19,2));";
+        parser.parse(ddl, tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+
+        final Table table = tables.forTable(null, null, "foo");
+
+        final Column c1 = table.columnWithName("c1");
+        assertThat(c1.typeName()).isEqualTo("DECIMAL");
+        assertThat(c1.length()).isEqualTo(19);
+        assertThat(c1.scale().get()).isEqualTo(0);
+
+        final Column c2 = table.columnWithName("c2");
+        assertThat(c2.typeName()).isEqualTo("DECIMAL");
+        assertThat(c2.length()).isEqualTo(19);
+        assertThat(c2.scale().get()).isEqualTo(0);
+
+        final Column c3 = table.columnWithName("c3");
+        assertThat(c3.typeName()).isEqualTo("DECIMAL");
+        assertThat(c3.length()).isEqualTo(10);
+        assertThat(c3.scale().get()).isEqualTo(0);
+
+        final Column c4 = table.columnWithName("c4");
+        assertThat(c4.typeName()).isEqualTo("DECIMAL");
+        assertThat(c4.length()).isEqualTo(10);
+        assertThat(c4.scale().get()).isEqualTo(0);
+
+        final Column c5 = table.columnWithName("c5");
+        assertThat(c5.typeName()).isEqualTo("DECIMAL");
+        assertThat(c5.length()).isEqualTo(19);
+        assertThat(c5.scale().get()).isEqualTo(2);
     }
 
     @Test
@@ -616,7 +735,7 @@ public class MySqlAntlrDdlParserTest {
     }
 
     @Test
-    @FixFor("DBZ-1150")
+    @FixFor({ "DBZ-1150", "DBZ-4174" })
     public void shouldParseCheckTableKeywords() {
         String ddl = "CREATE TABLE my_table (\n" +
                 "  user_id varchar(64) NOT NULL,\n" +
@@ -626,6 +745,11 @@ public class MySqlAntlrDdlParserTest {
                 "  medium varchar(256),\n" +
                 "  extended varchar(256),\n" +
                 "  changed varchar(256),\n" +
+                "  eur VARCHAR(100),\n" +
+                "  iso VARCHAR(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,\n" +
+                "  usa VARCHAR(100),\n" +
+                "  jis VARCHAR(100),\n" +
+                "  internal INT,\n" +
                 "  UNIQUE KEY call_states_userid (user_id)\n" +
                 ") ENGINE=InnoDB DEFAULT CHARSET=utf8";
         parser.parse(ddl, tables);
@@ -1218,6 +1342,34 @@ public class MySqlAntlrDdlParserTest {
     }
 
     @Test
+    @FixFor("DBZ-3969")
+    public void shouldParseNonBinaryStringWithBinaryCollationAsString() {
+        String ddl = "CREATE TABLE non_binary ( "
+                + "c1 CHAR(60) BINARY PRIMARY KEY,"
+                + "c2 VARCHAR(60) BINARY NOT NULL DEFAULT '',"
+                + "c3 TINYTEXT BINARY NOT NULL DEFAULT 'N',"
+                + "c4 TEXT BINARY,"
+                + "c5 MEDIUMTEXT BINARY,"
+                + "c6 LONGTEXT BINARY,"
+                + "c7 NCHAR(60) BINARY,"
+                + "c8 NVARCHAR(60) BINARY"
+                + ") engine=MyISAM CHARACTER SET utf8 COLLATE utf8_bin";
+        parser.parse(ddl, tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+        assertThat(tables.size()).isEqualTo(1);
+        Table table = tables.forTable(null, null, "non_binary");
+        assertThat(table.columns()).hasSize(8);
+        assertColumn(table, "c1", "CHAR BINARY", Types.CHAR, 60, -1, false, false, false, false, null);
+        assertColumn(table, "c2", "VARCHAR BINARY", Types.VARCHAR, 60, -1, false, false, false, true, "");
+        assertColumn(table, "c3", "TINYTEXT BINARY", Types.VARCHAR, -1, -1, false, false, false, true, "N");
+        assertColumn(table, "c4", "TEXT BINARY", Types.VARCHAR, -1, -1, true, false, false, true, null);
+        assertColumn(table, "c5", "MEDIUMTEXT BINARY", Types.VARCHAR, -1, -1, true, false, false, true, null);
+        assertColumn(table, "c6", "LONGTEXT BINARY", Types.VARCHAR, -1, -1, true, false, false, true, null);
+        assertColumn(table, "c7", "NCHAR BINARY", Types.NCHAR, 60, -1, true, false, false, true, null);
+        assertColumn(table, "c8", "NVARCHAR BINARY", Types.NVARCHAR, 60, -1, true, false, false, true, null);
+    }
+
+    @Test
     public void shouldParseCreateUserTable() {
         String ddl = "CREATE TABLE IF NOT EXISTS user (   Host char(60) binary DEFAULT '' NOT NULL, User char(32) binary DEFAULT '' NOT NULL, Select_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Insert_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Update_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Delete_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Create_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Drop_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Reload_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Shutdown_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Process_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, File_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Grant_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, References_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Index_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Alter_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Show_db_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Super_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Create_tmp_table_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Lock_tables_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Execute_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Repl_slave_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Repl_client_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Create_view_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Show_view_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Create_routine_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Alter_routine_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Create_user_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Event_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Trigger_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, Create_tablespace_priv enum('N','Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, ssl_type enum('','ANY','X509', 'SPECIFIED') COLLATE utf8_general_ci DEFAULT '' NOT NULL, ssl_cipher BLOB NOT NULL, x509_issuer BLOB NOT NULL, x509_subject BLOB NOT NULL, max_questions int(11) unsigned DEFAULT 0  NOT NULL, max_updates int(11) unsigned DEFAULT 0  NOT NULL, max_connections int(11) unsigned DEFAULT 0  NOT NULL, max_user_connections int(11) unsigned DEFAULT 0  NOT NULL, plugin char(64) DEFAULT 'mysql_native_password' NOT NULL, authentication_string TEXT, password_expired ENUM('N', 'Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, password_last_changed timestamp NULL DEFAULT NULL, password_lifetime smallint unsigned NULL DEFAULT NULL, account_locked ENUM('N', 'Y') COLLATE utf8_general_ci DEFAULT 'N' NOT NULL, PRIMARY KEY Host (Host,User) ) engine=MyISAM CHARACTER SET utf8 COLLATE utf8_bin comment='Users and global privileges';";
         parser.parse(ddl, tables);
@@ -1225,7 +1377,7 @@ public class MySqlAntlrDdlParserTest {
         Table foo = tables.forTable(new TableId(null, null, "user"));
         assertThat(foo).isNotNull();
         assertThat(foo.retrieveColumnNames()).contains("Host", "User", "Select_priv");
-        assertColumn(foo, "Host", "CHAR BINARY", Types.BINARY, 60, -1, false, false, false);
+        assertColumn(foo, "Host", "CHAR BINARY", Types.CHAR, 60, -1, false, false, false);
 
         parser.parse("DROP TABLE user", tables);
         assertThat(tables.size()).isEqualTo(0);
@@ -2871,6 +3023,27 @@ public class MySqlAntlrDdlParserTest {
         assertThat(column.isOptional()).isEqualTo(optional);
         assertThat(column.isGenerated()).isEqualTo(generated);
         assertThat(column.isAutoIncremented()).isEqualTo(autoIncremented);
+    }
+
+    private void assertColumn(Table table, String name, String typeName, int jdbcType, int length, int scale,
+                              boolean optional, boolean generated, boolean autoIncremented,
+                              boolean hasDefaultValue, Object defaultValue) {
+        Column column = table.columnWithName(name);
+        assertThat(column.name()).isEqualTo(name);
+        assertThat(column.typeName()).isEqualTo(typeName);
+        assertThat(column.jdbcType()).isEqualTo(jdbcType);
+        assertThat(column.length()).isEqualTo(length);
+        if (scale == Column.UNSET_INT_VALUE) {
+            assertFalse(column.scale().isPresent());
+        }
+        else {
+            assertThat(column.scale().get()).isEqualTo(scale);
+        }
+        assertThat(column.isOptional()).isEqualTo(optional);
+        assertThat(column.isGenerated()).isEqualTo(generated);
+        assertThat(column.isAutoIncremented()).isEqualTo(autoIncremented);
+        assertThat(column.hasDefaultValue()).isEqualTo(hasDefaultValue);
+        assertThat(column.defaultValue()).isEqualTo(defaultValue);
     }
 
     class MysqlDdlParserWithSimpleTestListener extends MySqlAntlrDdlParser {

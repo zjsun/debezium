@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import io.debezium.connector.oracle.OracleConnectorConfig;
+import io.debezium.connector.oracle.OracleDatabaseSchema;
 import io.debezium.connector.oracle.logminer.logwriter.LogWriterFlushStrategy;
 import io.debezium.util.Strings;
 
@@ -21,11 +22,6 @@ import io.debezium.util.Strings;
  */
 public class LogMinerQueryBuilder {
 
-    /**
-     * This represents a hash function generated for each row in the query that is meant to provide a
-     * unique hash value for each row within the scope of a transaction.
-     */
-    private static final String ROW_HASH = "ORA_HASH(SCN||OPERATION||RS_ID||SEQUENCE#||RTRIM(SUBSTR(SQL_REDO,1,256)))";
     private static final String LOGMNR_CONTENTS_VIEW = "V$LOGMNR_CONTENTS";
 
     /**
@@ -53,22 +49,30 @@ public class LogMinerQueryBuilder {
      * </pre>
      *
      * @param connectorConfig connector configuration, should not be {@code null}
+     * @param schema database schema, should not be {@code null}
      * @return the SQL string to be used to fetch changes from Oracle LogMiner
      */
-    public static String build(OracleConnectorConfig connectorConfig) {
+    public static String build(OracleConnectorConfig connectorConfig, OracleDatabaseSchema schema) {
         final StringBuilder query = new StringBuilder(1024);
         query.append("SELECT SCN, SQL_REDO, OPERATION_CODE, TIMESTAMP, XID, CSF, TABLE_NAME, SEG_OWNER, OPERATION, ");
-        query.append("USERNAME, ROW_ID, ROLLBACK, RS_ID, ").append(getRowHash()).append(" ");
+        query.append("USERNAME, ROW_ID, ROLLBACK, RS_ID ");
         query.append("FROM ").append(LOGMNR_CONTENTS_VIEW).append(" ");
 
         // These bind parameters will be bound when the query is executed by the caller.
         query.append("WHERE SCN > ? AND SCN <= ? ");
+
+        // Restrict to configured PDB if one is supplied
+        final String pdbName = connectorConfig.getPdbName();
+        if (!Strings.isNullOrEmpty(pdbName)) {
+            query.append("AND ").append("SRC_CON_NAME = '").append(pdbName.toUpperCase()).append("' ");
+        }
+
         query.append("AND (");
 
         // Always include START, COMMIT, MISSING_SCN, and ROLLBACK operations
         query.append("(OPERATION_CODE IN (6,7,34,36)");
 
-        if (!connectorConfig.getDatabaseHistory().storeOnlyCapturedTables()) {
+        if (!schema.storeOnlyCapturedTables()) {
             // In this mode, the connector will always be fed DDL operations for all tables even if they
             // are not part of the inclusion/exclusion lists.
             query.append(" OR ").append(buildDdlPredicate()).append(" ");
@@ -135,16 +139,6 @@ public class LogMinerQueryBuilder {
         }
 
         return query.toString();
-    }
-
-    /**
-     * Produces a hash of several columns in {@code V$LOGMNR_CONTENTS} to generate a unique identifier
-     * that can be used to recognize individual rows within the scope of a transaction.
-     *
-     * @return the row hashing function
-     */
-    private static String getRowHash() {
-        return ROW_HASH;
     }
 
     /**

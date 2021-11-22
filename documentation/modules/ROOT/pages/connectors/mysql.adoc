@@ -4,8 +4,8 @@
 = {prodname} connector for MySQL
 
 :context: mysql
+:mbean-name: {context}
 ifdef::community[]
-
 :toc:
 :toc-placement: macro
 :linkattrs:
@@ -17,8 +17,8 @@ toc::[]
 
 [NOTE]
 ====
-A new capturing implementation for the Debezium MySQL connector has been created as of Debezium 1.5,
-based on the common connector framework used by all the other Kafka Connect connectors of Debezium.
+A new capturing implementation for the {prodname} MySQL connector has been created as of {prodname} 1.5,
+based on the common connector framework used by the other {prodname} Kafka Connect connectors.
 
 If you encounter any issues with the new MySQL connector implementation, please log a link:https://issues.redhat.com/browse/DBZ[Jira issue]; in this case, you can use the legacy implementation by setting the `internal.implementation=legacy` connector configuration option
 (note this option as well as the legacy connector implementation itself is scheduled for removal in a future Debezium version).
@@ -131,17 +131,24 @@ Because these hosted options do not allow a global read lock, table-level locks 
 [[mysql-schema-history-topic]]
 === Schema history topic
 
-When a database client queries a database, the client uses the database’s current schema. However, the database schema can be changed at any time, which means that the connector must be able to identify what the schema was at the time each insert, update, or delete operation was recorded. Also, a connector cannot just use the current schema because the connector might be processing events that are relatively old and may have been recorded before the tables' schemas were changed.
+When a database client queries a database, the client uses the database’s current schema.
+However, the database schema can be changed at any time, which means that the connector must be able to identify what the schema was at the time each insert, update, or delete operation was recorded.
+Also, a connector cannot just use the current schema because the connector might be processing events that are relatively old that were recorded before the tables' schemas were changed.
 
-To handle this, MySQL includes in the binlog not only the row-level changes to the data, but also the DDL statements that are applied to the database. As the connector reads the binlog and comes across these DDL statements, it parses them and updates an in-memory representation of each table’s schema. The connector uses this schema representation to identify the structure of the tables at the time of each insert, update, or delete operation and to produce the appropriate change event. In a separate database history Kafka topic, the connector records all DDL statements along with the position in the binlog where each DDL statement appeared.
+To ensure correct processing of changes that occur after a schema change, MySQL includes in the binlog not only the row-level changes to the data, but also the DDL statements that are applied to the database.
+As the connector reads the binlog and comes across these DDL statements, it parses them and updates an in-memory representation of each table’s schema.
+The connector uses this schema representation to identify the structure of the tables at the time of each insert, update, or delete operation and to produce the appropriate change event.
+In a separate database history Kafka topic, the connector records all DDL statements along with the position in the binlog where each DDL statement appeared.
 
-When the connector restarts after having crashed or been stopped gracefully, the connector starts reading the binlog from a specific position, that is, from a specific point in time. The connector rebuilds the table structures that existed at this point in time by reading the database history Kafka topic and parsing all DDL statements up to the point in the binlog where the connector is starting.
+When the connector restarts after having crashed or been stopped gracefully, the connector starts reading the binlog from a specific position, that is, from a specific point in time.
+The connector rebuilds the table structures that existed at this point in time by reading the database history Kafka topic and parsing all DDL statements up to the point in the binlog where the connector is starting.
 
-This database history topic is for connector use only. The connector can optionally See {link-prefix}:{link-mysql-connector}#mysql-schema-change-topic[emit schema change events to a different topic that is intended for consumer applications].
+This database history topic is for connector use only.
+The connector can optionally {link-prefix}:{link-mysql-connector}#mysql-schema-change-topic[emit schema change events to a different topic that is intended for consumer applications].
 
-When the MySQL connector captures changes in a table to which a schema change tool such as `gh-ost` or `pt-online-schema-change` is applied there are helper tables created during the migration process.
+When the MySQL connector captures changes in a table to which a schema change tool such as `gh-ost` or `pt-online-schema-change` is applied, there are helper tables created during the migration process.
 The connector needs to be configured to capture change to these helper tables.
-If consumers do not need the records generated for helper tables then a single message transform can be applied to filter them out.
+If consumers do not need the records generated for helper tables, then a single message transform can be applied to filter them out.
 
 See {link-prefix}:{link-mysql-connector}#mysql-topic-names[default names for topics] that receive {prodname} event records.
 
@@ -151,128 +158,155 @@ See {link-prefix}:{link-mysql-connector}#mysql-topic-names[default names for top
 [id="mysql-schema-change-topic"]
 === Schema change topic
 
-You can configure a {prodname} MySQL connector to produce schema change events that include all DDL statements applied to databases in the MySQL server. The connector emits these events to a Kafka topic named _serverName_ where _serverName_ is the name of the connector as specified by the `database.server.name` connector configuration property.
+You can configure a {prodname} MySQL connector to produce schema change events that describe schema changes that are applied to captured tables in the database.
+The connector writes schema change events to a Kafka topic named `_<serverName>_`, where `_serverName_` is the logical server name that is specified in the xref:mysql-property-database-server-name[`database.server.name`] connector configuration property.
+Messages that the connector sends to the schema change topic contain a payload, and, optionally, also contain the schema of the change event message.
 
-If you choose to use _schema change events_, ensure that you consume records from the schema change topic. The database history topic is for connector use only.
+The payload of a schema change event message includes the following elements:
 
-IMPORTANT: A global order for events emitted to the schema change topic is vital. Therefore, you must not partition the database history topic. This means that you must specify a partition count of `1` when creating the database history topic. When relying on auto topic creation, make sure that Kafka’s `num.partitions` configuration option, which specifies the default number of partitions, is set to `1`.
+`ddl`:: Provides the SQL `CREATE`, `ALTER`, or `DROP` statement that results in the schema change.
+`databaseName`:: The name of the database to which the DDL statements are applied.
+The value of `databaseName` serves as the message key. 
+`pos`:: The position in the binlog where the statements appear.
+`tableChanges`::  A structured representation of the entire table schema after the schema change.
+The `tableChanges` field contains an array that includes entries for each column of the table.
+Because the structured representation presents data in JSON or Avro format, consumers can easily read messages without first processing them through a DDL parser.
 
-Each record that the connector emits to the schema change topic contains a message key that includes the name of the connected database when the DDL statement was applied, for example:
+[IMPORTANT]
+====
+For a table that is in capture mode, the connector not only stores the history of schema changes in the schema change topic, but also in an internal database history topic.
+The internal database history topic is for connector use only and it is not intended for direct use by consuming applications.
+Ensure that applications that require notifications about schema changes consume that information only from the schema change topic.
+====
 
-[source,json,subs="+attributes"]
-----
-{
-  "schema": {
-    "type": "struct",
-    "name": "io.debezium.connector.mysql.SchemaChangeKey",
-    "optional": false,
-    "fields": [
-      {
-        "field": "databaseName",
-        "type": "string",
-        "optional": false
-      }
-    ]
-  },
-  "payload": {
-    "databaseName": "inventory"
-  }
-}
-----
+[IMPORTANT]
+====
+Never partition the database history topic.
+For the database history topic to function correctly, it must maintain a consistent, global order of the event records that the connector emits to it.
 
-The schema change event record value contains a structure that includes the DDL statements, the name of the database to which the statements were applied, and the position in the binlog where the statements appeared, for example:
+To ensure that the topic is not split among partitions, set the partition count for the topic by using one of the following methods:
+
+* If you create the database history topic manually, specify a partition count of `1`.
+* If you use the Apache Kafka broker to create the database history topic automatically, the topic is created, set the value of the link:{link-kafka-docs}/#brokerconfigs_num.partitions[Kafka `num.partitions`] configuration option to `1`.
+====
+
+[WARNING]
+====
+The format of the messages that a connector emits to its schema change topic is in an incubating state and is subject to change without notice.
+====
+
+.Example: Message emitted to the MySQL connector schema change topic
+The following example shows a typical schema change message in JSON format.
+The message contains a logical representation of the table schema.
 
 [source,json,subs="attributes"]
 ----
 {
   "schema": {
-    "type": "struct",
-    "name": "io.debezium.connector.mysql.SchemaChangeValue",
-    "optional": false,
-    "fields": [
-      {
-        "field": "databaseName",
-        "type": "string",
-        "optional": false
-      },
-      {
-        "field": "ddl",
-        "type": "string",
-        "optional": false
-      },
-      {
-        "field": "source",
-        "type": "struct",
-        "name": "io.debezium.connector.mysql.Source",
-        "optional": false,
-        "fields": [
-          {
-            "type": "string",
-            "optional": true,
-            "field": "version"
-          },
-          {
-            "type": "string",
-            "optional": false,
-            "field": "name"
-          },
-          {
-            "type": "int64",
-            "optional": false,
-            "field": "server_id"
-          },
-          {
-            "type": "int64",
-            "optional": false,
-            "field": "ts_ms"
-          },
-          {
-            "type": "string",
-            "optional": true,
-            "field": "gtid"
-          },
-          {
-            "type": "string",
-            "optional": false,
-            "field": "file"
-          },
-          {
-            "type": "int64",
-            "optional": false,
-            "field": "pos"
-          },
-          {
-            "type": "int32",
-            "optional": false,
-            "field": "row"
-          },
-          {
-            "type": "boolean",
-            "optional": true,
-            "default": false,
-            "field": "snapshot"
-          },
-          {
-            "type": "int64",
-            "optional": true,
-            "field": "thread"
-          },
-          {
-            "type": "string",
-            "optional": true,
-            "field": "db"
-          },
-          {
-            "type": "string",
-            "optional": true,
-            "field": "table"
-          },
-          {
-            "type": "string",
-            "optional": true,
-            "field": "query"
-          }
-        ]
+  ...
+  },
+  "payload": {
+        "source": {  // <1>
+        "version": "{debezium-version}",
+        "connector": "mysql",
+        "name": "dbserver1",
+        "ts_ms": 0,
+        "snapshot": "false",
+        "db": "inventory",
+        "sequence": null,
+        "table": "customers",
+        "server_id": 0,
+        "gtid": null,
+        "file": "mysql-bin.000003",
+        "pos": 219,
+        "row": 0,
+        "thread": null,
+        "query": null
+    },
+    "databaseName": "inventory", // <2>
+    "schemaName": null,
+    "ddl": "ALTER TABLE customers ADD COLUMN middle_name VARCHAR(2000)", // <3>
+    "tableChanges": [  // <4>
+        {
+        "type": "ALTER", // <5>
+        "id": "\"inventory\".\"customers\"",  // <6>
+        "table": { // <7>
+            "defaultCharsetName": "latin1",
+            "primaryKeyColumnNames": [  // <8>
+                "id"
+            ],
+            "columns": [ // <9>
+                {
+                "name": "id",
+                "jdbcType": 4,
+                "nativeType": null,
+                "typeName": "INT",
+                "typeExpression": "INT",
+                "charsetName": null,
+                "length": 11,
+                "scale": null,
+                "position": 1,
+                "optional": false,
+                "autoIncremented": true,
+                "generated": true
+            },
+            {
+                "name": "first_name",
+                "jdbcType": 12,
+                "nativeType": null,
+                "typeName": "VARCHAR",
+                "typeExpression": "VARCHAR",
+                "charsetName": "latin1",
+                "length": 255,
+                "scale": null,
+                "position": 2,
+                "optional": false,
+                "autoIncremented": false,
+                "generated": false
+            },                        {
+                "name": "last_name",
+                "jdbcType": 12,
+                "nativeType": null,
+                "typeName": "VARCHAR",
+                "typeExpression": "VARCHAR",
+                "charsetName": "latin1",
+                "length": 255,
+                "scale": null,
+                "position": 3,
+                "optional": false,
+                "autoIncremented": false,
+                "generated": false
+            },
+            {
+                "name": "email",
+                "jdbcType": 12,
+                "nativeType": null,
+                "typeName": "VARCHAR",
+                "typeExpression": "VARCHAR",
+                "charsetName": "latin1",
+                "length": 255,
+                "scale": null,
+                "position": 4,
+                "optional": false,
+                "autoIncremented": false,
+                "generated": false
+            },
+            {
+                "name": "middle_name",
+                "jdbcType": 12,
+                "nativeType": null,
+                "typeName": "VARCHAR",
+                "typeExpression": "VARCHAR",
+                "charsetName": "latin1",
+                "length": 2000,
+                "scale": null,
+                "position": 5,
+                "optional": true,
+                "autoIncremented": false,
+                "generated": false
+            }
+          ]
+        }
       }
     ]
   },
@@ -298,22 +332,63 @@ The schema change event record value contains a structure that includes the DDL 
 }
 ----
 
-The `ddl` field might contain multiple DDL statements. Each statement applies to the database in the `databaseName` field. The statements appear in the order in which they were applied to the database. The `source` field is structured exactly as a standard data change event written to table-specific topics. This field is useful to correlate events on different topics.
+.Descriptions of fields in messages emitted to the schema change topic
+[cols="1,4,5",options="header"]
+|===
+|Item |Field name |Description
 
-[source,json,subs="+attributes"]
-----
-....
-"payload": {
-    "databaseName": "inventory",
-    "ddl": "CREATE TABLE products ( id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY,...)",
-    "source" : {
-        ...
-    }
-}
-....
-----
+|1
+|`source`
+|The `source` field is structured exactly as standard data change events that the connector writes to table-specific topics.
+This field is useful to correlate events on different topics.
 
-A client can submit multiple DDL statements to be applied to multiple databases. If MySQL applies them atomically, the connector takes the DDL statements in order, groups them by database, and creates a schema change event for each group. If MySQL applies them individually, the connector creates a separate schema change event for each statement.
+|2
+|`databaseName` +
+`schemaName`
+|Identifies the database and the schema that contains the change.
+The value of the `databaseName` field is used as the message key for the record.
+
+|3
+|`ddl`
+|This field contains the DDL that is responsible for the schema change.
+The `ddl` field can contain multiple DDL statements.
+Each statement applies to the database in the `databaseName` field.
+Multiple DDL statements appear in the order in which they were applied to the database. +
+ +
+Clients can submit multiple DDL statements that apply to multiple databases.
+If MySQL applies them atomically, the connector takes the DDL statements in order, groups them by database, and creates a schema change event for each group.
+If MySQL applies them individually, the connector creates a separate schema change event for each statement.
+
+|4
+|`tableChanges`
+|An array of one or more items that contain the schema changes generated by a DDL command.
+
+|5
+|`type`
+a|Describes the kind of change. The value is one of the following:
+
+`CREATE`:: Table created.
+`ALTER`:: Table modified.
+`DROP`:: Table deleted.
+
+|6
+|`id`
+|Full identifier of the table that was created, altered, or dropped.
+In the case of a table rename, this identifier is a concatenation of `_<old>_,_<new>_` table names.
+
+|7
+|`table`
+|Represents table metadata after the applied change.
+
+|8
+|`primaryKeyColumnNames`
+|List of columns that compose the table's primary key.
+
+|9
+|`columns`
+|Metadata for each column in the changed table.
+
+|===
 
 See also: {link-prefix}:{link-mysql-connector}#mysql-schema-history-topic[schema history topic].
 
@@ -408,19 +483,53 @@ a|Records the completed snapshot in the connector offsets.
 
 include::{partialsdir}/modules/all-connectors/ref-connector-incremental-snapshot.adoc[leveloffset=+3]
 
-===== Read-only Incremental snapshot
+==== Read-only Incremental snapshot
 
 The MySql connector supports Incremental snapshot with read-only connection to the database.
 It's achieved by using executed GTID set as high and low watermarks.
 The state of chunk's window gets updated by comparing GTIDs of binlog events or server's heartbeats against low and high watermarks.
 
-To switch to read-only implementation set {link-prefix}:#{link-mysql-connector}-property-read-only[read.only] to `true`.
+To switch to read-only implementation set {link-prefix}:{link-mysql-connector}#mysql-property-read-only[read.only] to `true`.
 
 .Prerequisites
 
 * {link-prefix}:{link-mysql-connector}#enable-mysql-gtids[`enable-mysql-gtids`]
 * If connector is reading from a replica, then for multithreaded replicas (replicas on which `replica_parallel_workers` is set to a value greater than 0)
 it's required to set `replica_preserve_commit_order=1` or `slave_preserve_commit_order=1`
+
+==== Ad-hoc read-only Incremental snapshot
+
+An alternative way to {link-prefix}:{link-signalling}[signalling table] mechanism to execute a new snapshot when the MySQL connection is read-only is to send a message to the Kafka topic configured with
+{link-prefix}:{link-mysql-connector}#mysql-property-signal-kafka-topic[signal.kafka.topic] property.
+
+The key of the Kafka message has to match the connector's name.
+
+The value is a json with `type` and `data` fields.
+
+The signal type is `execute-snapshot` and the `data` field must have the following fields:
+
+.Execute snapshot data fields
+[cols="2,2,6",options="header"]
+|===
+|Field | Default | Value
+
+|`type`
+|`incremental`
+| The type of the snapshot to be executed. Currently only `incremental` is supported. +
+See the next section for more details.
+
+|`data-collections`
+|_N/A_
+| An array of qualified names of table to be snapshotted. +
+The format of the names is the same as for {link-prefix}:#{context}-property-signal-data-collection[signal.data.collection] configuration option.
+
+|===
+
+An example of the execute-snapshot Kafka message:
+
+Key = `test_connector`
+
+Value = `{"type":"execute-snapshot","data": {"data-collections": ["schema1.table1", "schema1.table2"], "type": "INCREMENTAL"}}`
 
 ifdef::community[]
 
@@ -444,26 +553,55 @@ endif::community[]
 [[mysql-topic-names]]
 === Topic names
 
-The default behavior is that a {prodname} MySQL connector writes events for all `INSERT`, `UPDATE`, and `DELETE` operations in one table to one Kafka topic. The Kafka topic naming convention is as follows:
+By default, the MySQL connector writes change events for all of the `INSERT`, `UPDATE`, and `DELETE` operations that occur in a table to a single Apache Kafka topic that is specific to that table.
+
+The connector uses the following convention to name change event topics:
 
 _serverName.databaseName.tableName_
 
-Suppose that `fulfillment` is the server name, `inventory` is the database name, and the database contains tables named `orders`, `customers`, and `products`. The {prodname} MySQL connector emits events to three Kafka topics, one for each table in the database:
+Suppose that `fulfillment` is the server name, `inventory` is the database name, and the database contains tables named `orders`, `customers`, and `products`.
+The {prodname} MySQL connector emits events to three Kafka topics, one for each table in the database:
 
 ----
 fulfillment.inventory.orders
 fulfillment.inventory.customers
 fulfillment.inventory.products
 ----
+
+The following list provides definitions for the components of the default name:
+
+_serverName_:: The logical name of the server as specified by the xref:mysql-property-database-server-name[`database.server.name`] connector configuration property.
+
+_schemaName_:: The name of the schema in which the operation occurred.
+
+_tableName_:: The name of the table in which the operation occurred.
+
+The connector applies similar naming conventions to label its internal database history topics, xref:about-the-debezium-mysql-connector-schema-change-topic[schema change topics], and xref:mysql-transaction-metadata[transaction metadata topics].
+
+If the default topic name do not meet your requirements, you can configure custom topic names.
+To configure custom topic names, you specify regular expressions in the logical topic routing SMT.
+For more information about using the logical topic routing SMT to customize topic naming, see {link-prefix}:{link-topic-routing}#topic-routing[Topic routing].
+
 [[mysql-transaction-metadata]]
 === Transaction metadata
 
-{prodname} can generate events that represent transaction boundaries and that enrich data change event messages. For every transaction `BEGIN` and `END`, {prodname} generates an event that contains the following fields:
+{prodname} can generate events that represent transaction boundaries and that enrich data change event messages.
 
-* `status` - `BEGIN` or `END`
-* `id` - string representation of unique transaction identifier
-* `event_count` (for `END` events) - total number of events emitted by the transaction
-* `data_collections` (for `END` events) - an array of pairs of `data_collection` and `event_count` that provides the number of events emitted by changes originating from given data collection
+[NOTE]
+.Limits on when {prodname} receives transaction metadata
+====
+{prodname} registers and receives metadata only for transactions that occur after you deploy the connector.
+Metadata for transactions that occur before you deploy the connector is not available.
+====
+
+{prodname} generates transaction boundary events for the `BEGIN` and `END` delimiters in every transaction.
+Transaction boundary events contain the following fields:
+
+`status`:: `BEGIN` or `END`.
+`id`:: String representation of the unique transaction identifier.
+`event_count` (for `END` events):: Total number of events emitted by the transaction.
+`data_collections` (for `END` events):: An array of pairs of `data_collection` and `event_count` elements.
+that indicates the number of events that the connector emits for changes that originate from a data collection.
 
 .Example
 
@@ -493,7 +631,7 @@ fulfillment.inventory.products
 }
 ----
 
-Transaction events are written to the topic named `_database.server.name_.transaction`.
+The connector emits transaction events to the xref:mysql-property-database-server-name[`_<database.server.name>_`]`.transaction` topic.
 
 .Change data event enrichment
 
@@ -2171,11 +2309,11 @@ The following configuration properties are _required_ unless a default value is 
 |Property |Default |Description
 
 |[[mysql-property-name]]<<mysql-property-name, `+name+`>>
-|
+|No default
 |Unique name for the connector. Attempting to register again with the same name fails. This property is required by all Kafka Connect connectors.
 
 |[[mysql-property-connector-class]]<<mysql-property-connector-class, `+connector.class+`>>
-|
+|No default
 |The name of the Java class for the connector. Always specify  `io.debezium.connector.mysql.MySqlConnector` for the MySQL connector.
 
 |[[mysql-property-tasks-max]]<<mysql-property-tasks-max, `+tasks.max+`>>
@@ -2183,7 +2321,7 @@ The following configuration properties are _required_ unless a default value is 
 |The maximum number of tasks that should be created for this connector. The MySQL connector always uses a single task and therefore does not use this value, so the default is always acceptable.
 
 |[[mysql-property-database-hostname]]<<mysql-property-database-hostname, `+database.hostname+`>>
-|
+|No default
 |IP address or host name of the MySQL database server.
 
 |[[mysql-property-database-port]]<<mysql-property-database-port, `+database.port+`>>
@@ -2191,15 +2329,15 @@ The following configuration properties are _required_ unless a default value is 
 |Integer port number of the MySQL database server.
 
 |[[mysql-property-database-user]]<<mysql-property-database-user, `+database.user+`>>
-|
+|No default
 |Name of the MySQL user to use when connecting to the MySQL database server.
 
 |[[mysql-property-database-password]]<<mysql-property-database-password, `+database.password+`>>
-|
+|No default
 |Password to use when connecting to the MySQL database server.
 
 |[[mysql-property-database-server-name]]<<mysql-property-database-server-name, `+database.server.name+`>>
-|
+|No default
 |Logical name that identifies and provides a namespace for the particular MySQL database server/cluster in which {prodname} is capturing changes. The logical name should be unique across all other connectors, since it is used as a prefix for all Kafka topic names that receive events emitted by this connector.
 Only alphanumeric characters, hyphens, dots and underscores must be used in the database server logical name.
 
@@ -2246,7 +2384,7 @@ Do not also specify the `table.include.list` connector configuration property.
 |[[mysql-property-column-mask-hash]]<<mysql-property-column-mask-hash, `column.mask.hash._hashAlgorithm_.with.salt._salt_`>>
 |_n/a_
 a|An optional, comma-separated list of regular expressions that match the fully-qualified names of character-based columns.
-Fully-qualified names for columns are of the form _databaseName_._tableName_._columnName_.
+Fully-qualified names for columns are of the form `_<databaseName>_._<tableName>_._<columnName>_`.
 In the resulting change event record, the values for the specified columns are replaced with pseudonyms. +
 
 A pseudonym consists of the hashed value that results from applying the specified _hashAlgorithm_ and _salt_.
@@ -2381,12 +2519,12 @@ Setting `include.query` to `true` might expose tables or fields that are explici
 |A positive integer value that specifies the maximum time in milliseconds this connector should wait after trying to connect to the MySQL database server before timing out. Defaults to 30 seconds.
 
 |[[mysql-property-gtid-source-includes]]<<mysql-property-gtid-source-includes, `+gtid.source.includes+`>>
-|
+|No default
 |A comma-separated list of regular expressions that match source UUIDs in the GTID set used to find the binlog position in the MySQL server. Only the GTID ranges that have sources that match one of these include patterns are used.
 Do not also specify a setting for `gtid.source.excludes`.
 
 |[[mysql-property-gtid-source-excludes]]<<mysql-property-gtid-source-excludes, `+gtid.source.excludes+`>>
-|
+|No default
 |A comma-separated list of regular expressions that match source UUIDs in the GTID set used to find the binlog position in the MySQL server. Only the GTID ranges that have sources that do not match any of these exclude patterns are used. Do not also specify a value for `gtid.source.includes`.
 
 ifdef::community[]
@@ -2408,18 +2546,34 @@ After a source record is deleted, emitting a tombstone event (the default behavi
 
 |[[mysql-property-message-key-columns]]<<mysql-property-message-key-columns, `+message.key.columns+`>>
 |_n/a_
-|A semicolon separated list of tables with regular expressions that match table column names. The connector maps values in matching columns to key fields in change event records that it sends to Kafka topics. This is useful when a table does not have a primary key, or when you want to order change event records in a Kafka topic according to a field that is not a primary key. +
- +
-Separate entries with semicolons. Insert a colon between the fully-qualified table name and its regular expression. The format (shown with spaces for clarity only) is: +
- +
-_database-name_ `.` _table-name_ `:` _regexp_ `;` ... +
- +
-For example: +
- +
-`dbA.table_a:regex_1;dbB.table_b:regex_2;dbC.table_c:regex_3` +
- +
-If `table_a` has an `id` column, and `regex_1` is `^i` (matches any column that starts with `i`), the connector maps the value in the `id` column of `table_a` to a key field in change events that the connector sends to Kafka.
+|A list of expressions that specify the columns that the connector uses to form custom message keys for change event records that it publishes to the Kafka topics for specified tables.
 
+By default, {prodname} uses the primary key column of a table as the message key for records that it emits.
+In place of the default, or to specify a key for tables that lack a primary key, you can configure custom message keys based on one or more columns. +
+ +
+To establish a custom message key for a table, list the table, followed by the columns to use as the message key.
+Each list entry takes the following format: +
+ +
+`_<fully-qualified_tableName>_:_<keyColumn>_,_<keyColumn>_` +
+ +
+To base a table key on multiple column names, insert commas between the column names.
+
+Each fully-qualified table name is a regular expression in the following format: +
+ +
+`_<databaseName>_._<tableName>_` +
+ +
+The property can include entries for multiple tables.
+Use a semicolon to separate table entries in the list. +
+ +
+The following example sets the message key for the tables `inventory.customers` and `purchase.orders`: +
+ +
+`inventory.customers:pk1,pk2;(.*).purchaseorders:pk3,pk4` +
+ +
+For the table `inventory.customer`, the columns `pk1` and `pk2` are specified as the message key.
+For the `purchaseorders` tables in any database, the columns `pk3` and `pk4` server as the message key.
+
+There is no limit to the number of columns that you use to create custom message keys.
+However, it's best to use the minimum number that are required to specify a unique key.
 |[[mysql-property-binary-handling-mode]]<<mysql-property-binary-handling-mode,`+binary.handling.mode+`>>
 |bytes
 |Specifies how binary columns, for example, `blob`, `binary`, `varbinary`, should be represented in change events. Possible settings:  +
@@ -2510,13 +2664,34 @@ a|Controls whether and how long the connector holds the global MySQL read lock, 
 |An optional, comma-separated list of regular expressions that match names of schemas specified in `table.include.list` for which you *want* to take the snapshot.
 
 |[[mysql-property-snapshot-select-statement-overrides]]<<mysql-property-snapshot-select-statement-overrides, `+snapshot.select.statement.overrides+`>>
-|
-|Controls which table rows are included in snapshots. This property affects snapshots only. It does not affect events captured from the binlog. Specify a comma-separated list of fully-qualified table names in the form _databaseName.tableName_. +
- +
-For each table that you specify, also specify another configuration property: `snapshot.select.statement.overrides._DB_NAME_._TABLE_NAME_`. For example, the name of the other configuration property might be:  `snapshot.select.statement.overrides.inventory.orders`. Set this property to a `SELECT` statement that obtains only the rows that you want in the snapshot. When the connector performs a snapshot, it executes this `SELECT` statement to retrieve data from that table. +
- +
-A possible use case for setting these properties is large, append-only tables. You can specify a `SELECT` statement that sets a specific point for where to start a snapshot, or where to resume a snapshot if a previous snapshot was interrupted.
+|No default
+|Specifies the table rows to include in a snapshot.
+Use the property if you want a snapshot to include only a subset of the rows in a table.
+This property affects snapshots only.
+It does not apply to events that the connector reads from the log.
 
+The property contains a comma-separated list of fully-qualified table names in the form `_<databaseName>.<tableName>_`. For example, +
+ +
+`+"snapshot.select.statement.overrides": "inventory.products,customers.orders"+` +
+ +
+For each table in the list, add a further configuration property that specifies the `SELECT` statement for the connector to run on the table when it takes a snapshot.
+The specified `SELECT` statement determines the subset of table rows to include in the snapshot.
+Use the following format to specify the name of this `SELECT` statement property: +
+ +
+`snapshot.select.statement.overrides._<databaseName>_._<tableName>_`.
+For example,
+`snapshot.select.statement.overrides.customers.orders`. +
+ +
+Example:
+
+From a `customers.orders` table that includes the soft-delete column, `delete_flag`, add the following properties if you want a snapshot to include only those records that are not soft-deleted:
+
+----
+"snapshot.select.statement.overrides": "customer.orders",
+"snapshot.select.statement.overrides.customer.orders": "SELECT * FROM [customers].[orders] WHERE delete_flag = 0 ORDER BY id DESC"
+----
+
+In the resulting snapshot, the connector includes only the records for which `delete_flag = 0`.
 |[[mysql-property-min-row-count-to-stream-results]]<<mysql-property-min-row-count-to-stream-results, `+min.row.count.to.stream.results+`>>
 |`1000`
 |During a snapshot, the connector queries each table for which the connector is configured to capture changes. The connector uses each query result to produce a read event that contains data for all rows in that table. This property determines whether the MySQL connector puts results for a table into memory, which is fast but requires large amounts of memory, or streams the results, which can be slower but work for very large tables. The setting of this property specifies the minimum number of rows a table must contain before the connector streams results. +
@@ -2538,18 +2713,18 @@ _heartbeat.topics.prefix_._server.name_ +
 For example, if the database server name is `fulfillment`, the default topic name is `__debezium-heartbeat.fulfillment`.
 
 |[[mysql-property-database-initial-statements]]<<mysql-property-database-initial-statements, `+database.initial.statements+`>>
-|
+|No default
 |A semicolon separated list of SQL statements to be executed when a JDBC connection, not the connection that is reading the transaction log, to the database is established.
 To specify a semicolon as a character in a SQL statement and not as a delimiter, use two semicolons, (`;;`). +
  +
 The connector might establish JDBC connections at its own discretion, so this property is ony for configuring session parameters. It is not for executing DML statements.
 
 |[[mysql-property-snapshot-delay-ms]]<<mysql-property-snapshot-delay-ms, `+snapshot.delay.ms+`>>
-|
+|No default
 |An interval in milliseconds that the connector should wait before performing a snapshot when the connector starts. If you are starting multiple connectors in a cluster, this property is useful for avoiding snapshot interruptions, which might cause re-balancing of connectors.
 
 |[[mysql-property-snapshot-fetch-size]]<<mysql-property-snapshot-fetch-size, `+snapshot.fetch.size+`>>
-|
+|No default
 |During a snapshot, the connector reads table content in batches of rows. This property specifies the maximum number of rows in a batch.
 
 |[[mysql-property-snapshot-lock-timeout-ms]]<<mysql-property-snapshot-lock-timeout-ms, `+snapshot.lock.timeout.ms+`>>
@@ -2576,11 +2751,11 @@ endif::community[]
 |Indicates whether field names are sanitized to adhere to {link-prefix}:{link-avro-serialization}#avro-naming[Avro naming requirements].
 
 |[[mysql-property-skipped-operations]]<<mysql-property-skipped-operations, `+skipped.operations+`>>
-|
+|No default
 |Comma-separated list of operation types to skip during streaming. The following values are possible: `c` for inserts/create, `u` for updates, `d` for deletes. By default, no operations are skipped.
 
 |[[mysql-property-signal-data-collection]]<<mysql-property-signal-data-collection, `+signal.data.collection+`>>
-|
+|No default
 | Fully-qualified name of the data collection that is used to send {link-prefix}:{link-signalling}[signals] to the connector.
 The name format is _database-name.table-name_.
 
@@ -2598,6 +2773,42 @@ The name format is _database-name.table-name_.
 ==== {prodname} connector database history configuration properties
 
 include::{partialsdir}/modules/all-connectors/ref-connector-configuration-database-history-properties.adoc[leveloffset=+1]
+
+[id="debezium-{context}-connector-kafka-signals-configuration-properties"]
+==== {prodname} connector kafka signals configuration properties
+
+When MySQL connector is configured as read-only the alternative for the signalling table is the signals Kafka topic.
+
+{prodname} provides a set of `signal.*` properties that control how the connector interacts with the Kafka signals topic.
+
+The following table describes the `signal` properties.
+
+.Kafka signals configuration properties
+[cols="33%a,17%a,50%a",options="header",subs="+attributes"]
+|===
+|Property |Default |Description
+|[[{context}-property-signal-kafka-topic]]<<{context}-property-signal-kafka-topic, `+signal.kafka.topic+`>>
+|
+|The name of the Kafka topic that connector monitors for ad-hoc signals.
+
+|[[{context}-property-signal-kafka-bootstrap-servers]]<<{context}-property-signal-kafka-bootstrap-servers, `+signal.kafka.bootstrap.servers+`>>
+|
+|A list of host/port pairs that the connector uses for establishing an initial connection to the Kafka cluster. Each pair should point to the same Kafka cluster used by the Kafka Connect process.
+
+|[[{context}-property-signal-kafka-poll-timeout-ms]]<<{context}-property-signal-kafka-poll-timeout-ms, `+signal.kafka.poll.timeout.ms+`>>
+|`100`
+|An integer value that specifies the maximum number of milliseconds the connector should wait when polling signals. The default is 100ms.
+
+|===
+
+[id="debezium-{context}-connector-pass-through-signals-kafka-consumer-configuration-properties"]
+==== {prodname} connector pass-through signals Kafka consumer client configuration properties
+
+The {prodname} connector provides for pass-through configuration of the signals Kafka consumer.
+Pass-through signals properties begin with the prefix `signals.consumer.*`.
+For example, the connector passes properties such as `signal.consumer.security.protocol=SSL` to the Kafka consumer.
+
+As is the case with the xref:{context}-pass-through-database-history-properties-for-configuring-producer-and-consumer-clients[pass-through properties for database history clients], {prodname} strips the prefixes from the properties before it passes them to the Kafka signals consumer.
 
 [id="debezium-{context}-connector-pass-through-database-driver-configuration-properties"]
 ==== {prodname} connector pass-through database driver configuration properties
@@ -2624,8 +2835,6 @@ The {prodname} MySQL connector provides three types of metrics that are in addit
 [[mysql-snapshot-metrics]]
 === Snapshot metrics
 
-The *MBean* is `debezium.mysql:type=connector-metrics,context=snapshot,server=_<database.server.name>_`.
-
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-snapshot-metrics.adoc[leveloffset=+1]
 
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-incremental-snapshot-metrics.adoc[leveloffset=+1]
@@ -2637,8 +2846,6 @@ The {prodname} MySQL connector also provides the `HoldingGlobalLock` custom snap
 // Title: Monitoring {prodname} MySQL connector record streaming
 [[mysql-streaming-metrics]]
 === Streaming metrics
-
-The *MBean* is `debezium.mysql:type=connector-metrics,context=streaming,server=<database.server.name>`.
 
 Transaction-related attributes are available only if binlog event buffering is enabled. See {link-prefix}:{link-mysql-connector}#mysql-property-binlog-buffer-size[`binlog.buffer.size`] in the advanced connector configuration properties for more details.
 
@@ -2694,8 +2901,6 @@ The {prodname} MySQL connector also provides the following additional streaming 
 // Title: Monitoring {prodname} MySQL connector schema history
 [[mysql-schema-history-metrics]]
 === Schema history metrics
-
-The *MBean* is `debezium.mysql:type=connector-metrics,context=schema-history,server=_<database.server.name>_`.
 
 include::{partialsdir}/modules/all-connectors/ref-connector-monitoring-schema-history-metrics.adoc[leveloffset=+1]
 

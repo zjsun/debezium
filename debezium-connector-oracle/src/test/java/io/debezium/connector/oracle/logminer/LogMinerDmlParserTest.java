@@ -12,6 +12,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TestRule;
 
+import io.debezium.connector.oracle.OracleValueConverters;
 import io.debezium.connector.oracle.junit.SkipTestDependingOnAdapterNameRule;
 import io.debezium.connector.oracle.junit.SkipWhenAdapterNameIsNot;
 import io.debezium.connector.oracle.logminer.events.EventType;
@@ -21,6 +22,8 @@ import io.debezium.doc.FixFor;
 import io.debezium.relational.Column;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
+
+import oracle.jdbc.OracleTypes;
 
 /**
  * @author Chris Cranford
@@ -163,7 +166,7 @@ public class LogMinerDmlParserTest {
     }
 
     @Test
-    @FixFor("DBZ-3235")
+    @FixFor({ "DBZ-3235", "DBZ-4194" })
     public void testParsingUpdateWithNoWhereClauseIsAcceptable() throws Exception {
         final Table table = Table.editor()
                 .tableId(TableId.parse("DEBEZIUM.TEST"))
@@ -207,6 +210,37 @@ public class LogMinerDmlParserTest {
         assertThat(entry.getOldValues()).hasSize(4);
         assertThat(entry.getOldValues()[0]).isNull();
         assertThat(entry.getOldValues()[1]).isNull();
+        assertThat(entry.getOldValues()[2]).isNull();
+        assertThat(entry.getOldValues()[3]).isNull();
+        assertThat(entry.getNewValues()).isEmpty();
+    }
+
+    @Test
+    @FixFor("DBZ-4194")
+    public void testParsingWithTableAliases() throws Exception {
+        final Table table = Table.editor()
+                .tableId(TableId.parse("DEBEZIUM.TEST"))
+                .addColumn(Column.editor().name("COL1").create())
+                .addColumn(Column.editor().name("COL2").create())
+                .addColumn(Column.editor().name("COL3").create())
+                .addColumn(Column.editor().name("UNUSED").create())
+                .create();
+
+        String sql = "update \"DEBEZIUM\".\"TEST\" a set a.\"COL1\" = '1', a.\"COL2\" = NULL, a.\"COL3\" = 'Hello2';";
+
+        LogMinerDmlEntry entry = fastDmlParser.parse(sql, table, null);
+        assertThat(entry.getEventType()).isEqualTo(EventType.UPDATE);
+        assertThat(entry.getNewValues()[0]).isEqualTo("1");
+        assertThat(entry.getNewValues()[1]).isNull();
+        assertThat(entry.getNewValues()[2]).isEqualTo("Hello2");
+
+        sql = "delete from \"DEBEZIUM\".\"TEST\" a where a.\"COL1\" = '1' and a.\"COL2\" = '2' and a.\"COL3\" = Unsupported Type;";
+
+        entry = fastDmlParser.parse(sql, table, null);
+        assertThat(entry.getEventType()).isEqualTo(EventType.DELETE);
+        assertThat(entry.getOldValues()).hasSize(4);
+        assertThat(entry.getOldValues()[0]).isEqualTo("1");
+        assertThat(entry.getOldValues()[1]).isEqualTo("2");
         assertThat(entry.getOldValues()[2]).isNull();
         assertThat(entry.getOldValues()[3]).isNull();
         assertThat(entry.getNewValues()).isEmpty();
@@ -336,6 +370,105 @@ public class LogMinerDmlParserTest {
         assertThat(entry.getOldValues()).hasSize(2);
         assertThat(entry.getOldValues()[0]).isEqualTo("Bob''s dog");
         assertThat(entry.getOldValues()[1]).isEqualTo("1");
+        assertThat(entry.getNewValues()).isEmpty();
+    }
+
+    @Test
+    @FixFor("DBZ-3892")
+    public void shouldParseConcatenatedUnistrValues() throws Exception {
+        final Table table = Table.editor()
+                .tableId(TableId.parse("DEBEZIUM.TEST"))
+                .addColumn(Column.editor().name("COL1").create())
+                .addColumn(Column.editor().name("COL2").create())
+                .create();
+
+        // test concatenation in INSERT column values
+        String sql = "insert into \"DEBEZIUM\".\"TEST\"(\"COL1\",\"COL2\") values ('1',UNISTR('\0412\044B') || UNISTR('\043F\043E'));";
+        LogMinerDmlEntry entry = fastDmlParser.parse(sql, table, null);
+        assertThat(entry.getEventType()).isEqualTo(EventType.INSERT);
+        assertThat(entry.getOldValues()).isEmpty();
+        assertThat(entry.getNewValues()).hasSize(2);
+        assertThat(entry.getNewValues()[0]).isEqualTo("1");
+        assertThat(entry.getNewValues()[1]).isEqualTo("UNISTR('\0412\044B') || UNISTR('\043F\043E')");
+
+        // test concatenation in SET statement
+        sql = "update \"DEBEZIUM\".\"TEST\" set \"COL2\" = UNISTR('\0412\044B') || UNISTR('\043F\043E') where \"COL1\" = '1' and \"COL2\" IS NULL;";
+        entry = fastDmlParser.parse(sql, table, null);
+        assertThat(entry.getEventType()).isEqualTo(EventType.UPDATE);
+        assertThat(entry.getOldValues()).hasSize(2);
+        assertThat(entry.getOldValues()[0]).isEqualTo("1");
+        assertThat(entry.getOldValues()[1]).isNull();
+        assertThat(entry.getNewValues()).hasSize(2);
+        assertThat(entry.getNewValues()[0]).isEqualTo("1");
+        assertThat(entry.getNewValues()[1]).isEqualTo("UNISTR('\0412\044B') || UNISTR('\043F\043E')");
+
+        // test concatenation in update WHERE statement
+        sql = "update \"DEBEZIUM\".\"TEST\" set \"COL2\" = NULL where \"COL1\" = '1' and \"COL2\" = UNISTR('\0412\044B') || UNISTR('\043F\043E');";
+        entry = fastDmlParser.parse(sql, table, null);
+        assertThat(entry.getEventType()).isEqualTo(EventType.UPDATE);
+        assertThat(entry.getOldValues()).hasSize(2);
+        assertThat(entry.getOldValues()[0]).isEqualTo("1");
+        assertThat(entry.getOldValues()[1]).isEqualTo("UNISTR('\0412\044B') || UNISTR('\043F\043E')");
+        assertThat(entry.getNewValues()).hasSize(2);
+        assertThat(entry.getNewValues()[0]).isEqualTo("1");
+        assertThat(entry.getNewValues()[1]).isNull();
+
+        // test concatenation in delete WHERE statement
+        sql = "delete from \"DEBEZIUM\".\"TEST\" where \"COL1\" = '1' and \"COL2\" = UNISTR('\0412\044B') || UNISTR('\043F\043E');";
+        entry = fastDmlParser.parse(sql, table, null);
+        assertThat(entry.getEventType()).isEqualTo(EventType.DELETE);
+        assertThat(entry.getOldValues()).hasSize(2);
+        assertThat(entry.getOldValues()[0]).isEqualTo("1");
+        assertThat(entry.getOldValues()[1]).isEqualTo("UNISTR('\0412\044B') || UNISTR('\043F\043E')");
+        assertThat(entry.getNewValues()).hasSize(0);
+    }
+
+    @Test
+    public void shouldReturnUnavailableColumnValueForLobColumnTypes() throws Exception {
+        final Table table = Table.editor()
+                .tableId(TableId.parse("DEBEZIUM.TEST"))
+                .addColumn(Column.editor().name("ID").create())
+                .addColumn(Column.editor().name("COL1").create())
+                .addColumn(Column.editor().name("VAL_CLOB").jdbcType(OracleTypes.CLOB).create())
+                .addColumn(Column.editor().name("VAL_NCLOB").jdbcType(OracleTypes.NCLOB).create())
+                .addColumn(Column.editor().name("VAL_BLOB").jdbcType(OracleTypes.BLOB).create())
+                .addColumn(Column.editor().name("VAL_CLOB2").jdbcType(OracleTypes.CLOB).create())
+                .addColumn(Column.editor().name("VAL_BLOB2").jdbcType(OracleTypes.BLOB).create())
+                .create();
+
+        // test unchanged column values in update with both supplied & unsupported lob fields
+        String sql = "update \"DEBEZIUM\".\"TEST\" set \"COL1\" = 'Test', \"VAL_CLOB2\" = 'X', \"VAL_BLOB2\" = HEXTORAW('0E') where \"ID\" = '1';";
+        LogMinerDmlEntry entry = fastDmlParser.parse(sql, table, null);
+        assertThat(entry.getEventType()).isEqualTo(EventType.UPDATE);
+        assertThat(entry.getOldValues()).hasSize(7);
+        assertThat(entry.getOldValues()[0]).isEqualTo("1");
+        assertThat(entry.getOldValues()[1]).isNull();
+        assertThat(entry.getOldValues()[2]).isEqualTo(OracleValueConverters.UNAVAILABLE_VALUE);
+        assertThat(entry.getOldValues()[3]).isEqualTo(OracleValueConverters.UNAVAILABLE_VALUE);
+        assertThat(entry.getOldValues()[4]).isEqualTo(OracleValueConverters.UNAVAILABLE_VALUE);
+        assertThat(entry.getOldValues()[5]).isEqualTo(OracleValueConverters.UNAVAILABLE_VALUE);
+        assertThat(entry.getOldValues()[6]).isEqualTo(OracleValueConverters.UNAVAILABLE_VALUE);
+        assertThat(entry.getNewValues()).hasSize(7);
+        assertThat(entry.getNewValues()[0]).isEqualTo("1");
+        assertThat(entry.getNewValues()[1]).isEqualTo("Test");
+        assertThat(entry.getNewValues()[2]).isEqualTo(OracleValueConverters.UNAVAILABLE_VALUE);
+        assertThat(entry.getNewValues()[3]).isEqualTo(OracleValueConverters.UNAVAILABLE_VALUE);
+        assertThat(entry.getNewValues()[4]).isEqualTo(OracleValueConverters.UNAVAILABLE_VALUE);
+        assertThat(entry.getNewValues()[5]).isEqualTo("X");
+        assertThat(entry.getNewValues()[6]).isEqualTo("HEXTORAW('0E')");
+
+        // test unchanged column values not supplied in delete statements
+        sql = "delete from \"DEBEZIUM\".\"TEST\" where \"ID\" = '1';";
+        entry = fastDmlParser.parse(sql, table, null);
+        assertThat(entry.getEventType()).isEqualTo(EventType.DELETE);
+        assertThat(entry.getOldValues()).hasSize(7);
+        assertThat(entry.getOldValues()[0]).isEqualTo("1");
+        assertThat(entry.getOldValues()[1]).isNull();
+        assertThat(entry.getOldValues()[2]).isEqualTo(OracleValueConverters.UNAVAILABLE_VALUE);
+        assertThat(entry.getOldValues()[3]).isEqualTo(OracleValueConverters.UNAVAILABLE_VALUE);
+        assertThat(entry.getOldValues()[4]).isEqualTo(OracleValueConverters.UNAVAILABLE_VALUE);
+        assertThat(entry.getOldValues()[5]).isEqualTo(OracleValueConverters.UNAVAILABLE_VALUE);
+        assertThat(entry.getOldValues()[6]).isEqualTo(OracleValueConverters.UNAVAILABLE_VALUE);
         assertThat(entry.getNewValues()).isEmpty();
     }
 }

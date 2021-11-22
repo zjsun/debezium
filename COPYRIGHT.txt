@@ -24,6 +24,7 @@ Andrew Garrett
 Andrew Tongen
 Andrey Ignatenko
 Andrey Pustovetov
+Andrey Yegorov
 Andy Teijelo
 Anisha Mohanty
 Anton Kondratev
@@ -32,6 +33,7 @@ Arik Cohen
 Arkoprabho Chakraborti
 artiship
 Ashhar Hasan
+Ashmeet Lamba
 Attila Szucs
 Aykut Farsak
 Babur Duisenov
@@ -60,8 +62,10 @@ Chris Cranford
 Chris Egerton
 Chris Riccomini
 Christian Posta
+Christopher Burch
 Christopher Sang
 Chuck Ha
+Claus Guttesen
 Cliff Wheadon
 Collin Van Dyck
 Cory Harper
@@ -81,7 +85,9 @@ Denis Mikhaylov
 Dennis Campagna
 Dennis Persson
 Derek Moore
+Dhrubajyoti G
 Duncan Sands
+Dushyant M
 Echo Xu
 Ed Laur
 Eduardo Hayashi
@@ -99,7 +105,7 @@ Fabio Cantarini
 Fahim Farook
 Faizan
 Fatih Güçlü Akkaya
-Fándly Gergő 
+Fándly Gergő
 Felix Eckhardt
 Fintan Bolton
 Frank Koornstra
@@ -116,6 +122,7 @@ Gurnaaz Randhawa
 Guy Pascarella
 Grzegorz Kołakowski
 Jan Hendrik Dolling
+Jiabao Sun
 Hans-Peter Grahsl
 Harvey Yue
 Henryk Konsek
@@ -127,6 +134,7 @@ Hyunjin Oh
 Ian Axelrod
 Igor Gabaydulin
 Ilia Bogdanov
+Indra Shukla
 ismail Simsek
 Ivan Klass
 Ivan Kovbas
@@ -160,11 +168,14 @@ Jon Casstevens
 Jonas Lins
 Jordan Bragg
 Jork Zijlstra
+Jorn Argelo
 Jos Huiting
+Jose Luis
 Josh Arenberg
 Josh Stanfield
 Joy Gao
 Juan Antonio Pedraza
+Judah Rand
 Jun Du
 Jure Kajzer
 Justin Hiza
@@ -176,6 +187,7 @@ Kevin Pullin
 Kewei Shang
 Krizhan Mariampillai
 Kyley Jex
+Laurent Broudoux
 Leo Mei
 Lev Zemlyanov
 Linh Nguyen Hoang
@@ -255,6 +267,7 @@ Robert Hana
 Roman Kuchar
 Sagar Rao
 Sahan Dilshan
+Sungho Hwang
 René Kerner
 Rich O'Connell
 Robert Coup
@@ -310,6 +323,7 @@ Vasily Ulianko
 Vedit Firat Arig
 Victar Malinouski
 Victor Xiang
+Vivek Wassan
 Vladimir Osin
 Wang-Yu-Chao
 WenChao Ke
@@ -317,6 +331,7 @@ Wei Wu
 WenZe Hu
 William Pursell
 Willie Cheong
+Willie Zhu
 Wout Scheepers
 Xiao Fu
 Xuan Shen
@@ -325,6 +340,9 @@ yangsanity
 Yilong Chang
 Yiming Liu
 Yoann Rodière
+Yossi Shirizli
+Yuan Zhang
+Yuiham Chan
 Zheng Wang
 Zoran Regvart
 志飞 张

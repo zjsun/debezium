@@ -30,7 +30,6 @@ import io.debezium.connector.oracle.logminer.events.LobWriteEvent;
 import io.debezium.connector.oracle.logminer.events.LogMinerEvent;
 import io.debezium.connector.oracle.logminer.events.LogMinerEventRow;
 import io.debezium.connector.oracle.logminer.events.SelectLobLocatorEvent;
-import io.debezium.connector.oracle.logminer.events.Transaction;
 import io.debezium.connector.oracle.logminer.parser.DmlParserException;
 import io.debezium.connector.oracle.logminer.parser.LogMinerDmlEntry;
 import io.debezium.connector.oracle.logminer.parser.LogMinerDmlParser;
@@ -45,7 +44,7 @@ import io.debezium.relational.TableId;
  *
  * @author Chris Cranford
  */
-public abstract class AbstractLogMinerEventProcessor implements LogMinerEventProcessor {
+public abstract class AbstractLogMinerEventProcessor<T extends AbstractTransaction> implements LogMinerEventProcessor {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(AbstractLogMinerEventProcessor.class);
 
@@ -56,11 +55,13 @@ public abstract class AbstractLogMinerEventProcessor implements LogMinerEventPro
     private final OracleOffsetContext offsetContext;
     private final EventDispatcher<TableId> dispatcher;
     private final OracleStreamingChangeEventSourceMetrics metrics;
-    private final TransactionReconciliation reconciliation;
     private final LogMinerDmlParser dmlParser;
     private final SelectLobParser selectLobParser;
 
     protected final Counters counters;
+
+    private Scn lastProcessedScn = Scn.NULL;
+    private boolean sequenceUnavailable = false;
 
     public AbstractLogMinerEventProcessor(ChangeEventSourceContext context,
                                           OracleConnectorConfig connectorConfig,
@@ -76,7 +77,6 @@ public abstract class AbstractLogMinerEventProcessor implements LogMinerEventPro
         this.offsetContext = offsetContext;
         this.dispatcher = dispatcher;
         this.metrics = metrics;
-        this.reconciliation = new TransactionReconciliation(connectorConfig, schema);
         this.counters = new Counters();
         this.dmlParser = new LogMinerDmlParser();
         this.selectLobParser = new SelectLobParser();
@@ -88,10 +88,6 @@ public abstract class AbstractLogMinerEventProcessor implements LogMinerEventPro
 
     protected OracleDatabaseSchema getSchema() {
         return schema;
-    }
-
-    protected TransactionReconciliation getReconciliation() {
-        return reconciliation;
     }
 
     /**
@@ -127,10 +123,42 @@ public abstract class AbstractLogMinerEventProcessor implements LogMinerEventPro
     }
 
     /**
+     * Return the last processed system change number handled by the processor.
+     *
+     * @return the last processed system change number, never {@code null}.
+     */
+    protected Scn getLastProcessedScn() {
+        return lastProcessedScn;
+    }
+
+    /**
      * Returns the {@code TransactionCache} implementation.
      * @return the transaction cache, never {@code null}
      */
-    protected abstract TransactionCache<?> getTransactionCache();
+    protected abstract TransactionCache<T, ?> getTransactionCache();
+
+    /**
+     * Creates a new transaction based on the supplied {@code START} event.
+     *
+     * @param row the event row, must not be {@code null}
+     * @return the implementation-specific {@link Transaction} instance
+     */
+    protected abstract T createTransaction(LogMinerEventRow row);
+
+    /**
+     * Removes a specific transaction event by database row identifier.
+     *
+     * @param row the event row that contains the row identifier, must not be {@code null}
+     */
+    protected abstract void removeEventWithRowId(LogMinerEventRow row);
+
+    /**
+     * Returns the number of events associated with the specified transaction.
+     *
+     * @param transaction the transaction, must not be {@code null}
+     * @return the number of events in the transaction
+     */
+    protected abstract int getTransactionEventCount(T transaction);
 
     // todo: can this be removed in favor of a single implementation?
     protected boolean isTrxIdRawValue() {
@@ -159,6 +187,9 @@ public abstract class AbstractLogMinerEventProcessor implements LogMinerEventPro
      * @throws InterruptedException if the dispatcher was interrupted sending an event
      */
     protected void processRow(LogMinerEventRow row) throws SQLException, InterruptedException {
+        if (!row.getEventType().equals(EventType.MISSING_SCN)) {
+            lastProcessedScn = row.getScn();
+        }
         switch (row.getEventType()) {
             case MISSING_SCN:
                 handleMissingScn(row);
@@ -207,10 +238,14 @@ public abstract class AbstractLogMinerEventProcessor implements LogMinerEventPro
      */
     protected void handleStart(LogMinerEventRow row) {
         final String transactionId = row.getTransactionId();
-        final Transaction transaction = getTransactionCache().get(transactionId);
+        final AbstractTransaction transaction = getTransactionCache().get(transactionId);
         if (transaction == null && !isRecentlyCommitted(transactionId)) {
-            getTransactionCache().put(transactionId, new Transaction(transactionId, row.getScn(), row.getChangeTime()));
+            getTransactionCache().put(transactionId, createTransaction(row));
             metrics.setActiveTransactions(getTransactionCache().size());
+        }
+        else if (transaction != null && !isRecentlyCommitted(transactionId)) {
+            LOGGER.trace("Transaction {} is not yet committed and START event detected.", transactionId);
+            transaction.start();
         }
     }
 
@@ -282,16 +317,18 @@ public abstract class AbstractLogMinerEventProcessor implements LogMinerEventPro
             return;
         }
 
-        final LogMinerDmlEntry dmlEntry = selectLobParser.parse(row.getRedoSql(), table);
-        dmlEntry.setObjectName(row.getTableName());
-        dmlEntry.setObjectOwner(row.getTablespaceName());
-
         addToTransaction(row.getTransactionId(),
                 row,
-                () -> new SelectLobLocatorEvent(row,
-                        dmlEntry,
-                        selectLobParser.getColumnName(),
-                        selectLobParser.isBinary()));
+                () -> {
+                    final LogMinerDmlEntry dmlEntry = selectLobParser.parse(row.getRedoSql(), table);
+                    dmlEntry.setObjectName(row.getTableName());
+                    dmlEntry.setObjectOwner(row.getTablespaceName());
+
+                    return new SelectLobLocatorEvent(row,
+                            dmlEntry,
+                            selectLobParser.getColumnName(),
+                            selectLobParser.isBinary());
+                });
 
         metrics.incrementRegisteredDmlCount();
     }
@@ -303,11 +340,13 @@ public abstract class AbstractLogMinerEventProcessor implements LogMinerEventPro
      */
     protected void handleLobWrite(LogMinerEventRow row) {
         if (!getConfig().isLobEnabled()) {
-            LOGGER.trace("LOB support is disabled, LOB_WRITE '{}' skipped", row);
+            LOGGER.trace("LOB support is disabled, LOB_WRITE scn={}, tableId={} skipped", row.getScn(), row.getTableId());
             return;
         }
 
-        LOGGER.trace("LOB_WRITE: {}", row);
+        LOGGER.trace("LOB_WRITE: scn={}, tableId={}, changeTime={}, transactionId={}",
+                row.getScn(), row.getTableId(), row.getChangeTime(), row.getTransactionId());
+
         final TableId tableId = row.getTableId();
         final Table table = getSchema().tableFor(tableId);
         if (table == null) {
@@ -316,8 +355,7 @@ public abstract class AbstractLogMinerEventProcessor implements LogMinerEventPro
         }
 
         if (row.getRedoSql() != null) {
-            final String lobWriteSql = parseLobWriteSql(row.getRedoSql());
-            addToTransaction(row.getTransactionId(), row, () -> new LobWriteEvent(row, lobWriteSql));
+            addToTransaction(row.getTransactionId(), row, () -> new LobWriteEvent(row, parseLobWriteSql(row.getRedoSql())));
         }
     }
 
@@ -371,13 +409,9 @@ public abstract class AbstractLogMinerEventProcessor implements LogMinerEventPro
                 break;
         }
 
-        final TableId tableId = row.getTableId();
-        Table table = getSchema().tableFor(tableId);
+        final Table table = getTableForDataEvent(row);
         if (table == null) {
-            if (!getConfig().getTableFilters().dataCollectionFilter().isIncluded(tableId)) {
-                return;
-            }
-            table = dispatchSchemaChangeEventAndGetTableForNewCapturedTable(tableId, offsetContext, dispatcher);
+            return;
         }
 
         if (row.isRollbackFlag()) {
@@ -386,21 +420,16 @@ public abstract class AbstractLogMinerEventProcessor implements LogMinerEventPro
             // with a rollback flag to indicate that the prior event should be omitted. In this
             // use case, the transaction can still be committed, so we need to manually rollback
             // the previous DML event when this use case occurs.
-            final Transaction transaction = getTransactionCache().get(row.getTransactionId());
-            if (transaction == null) {
-                LOGGER.warn("Cannot undo change '{}' since transaction was not found.", row);
-            }
-            else {
-                transaction.removeEventWithRowId(row.getRowId());
-            }
+            removeEventWithRowId(row);
             return;
         }
 
-        final LogMinerDmlEntry dmlEntry = parseDmlStatement(row.getRedoSql(), table, row.getTransactionId());
-        dmlEntry.setObjectName(row.getTableName());
-        dmlEntry.setObjectOwner(row.getTablespaceName());
-
-        addToTransaction(row.getTransactionId(), row, () -> new DmlEvent(row, dmlEntry));
+        addToTransaction(row.getTransactionId(), row, () -> {
+            final LogMinerDmlEntry dmlEntry = parseDmlStatement(row.getRedoSql(), table, row.getTransactionId());
+            dmlEntry.setObjectName(row.getTableName());
+            dmlEntry.setObjectOwner(row.getTablespaceName());
+            return new DmlEvent(row, dmlEntry);
+        });
 
         metrics.incrementRegisteredDmlCount();
     }
@@ -432,6 +461,18 @@ public abstract class AbstractLogMinerEventProcessor implements LogMinerEventPro
         }
     }
 
+    private Table getTableForDataEvent(LogMinerEventRow row) throws SQLException, InterruptedException {
+        final TableId tableId = row.getTableId();
+        Table table = getSchema().tableFor(tableId);
+        if (table == null) {
+            if (!getConfig().getTableFilters().dataCollectionFilter().isIncluded(tableId)) {
+                return null;
+            }
+            table = dispatchSchemaChangeEventAndGetTableForNewCapturedTable(tableId, offsetContext, dispatcher);
+        }
+        return table;
+    }
+
     /**
      * Checks whether the result-set has any more data available.
      * When a new row is available, the streaming metrics is updated with the fetch timings.
@@ -442,11 +483,55 @@ public abstract class AbstractLogMinerEventProcessor implements LogMinerEventPro
      */
     private boolean hasNextWithMetricsUpdate(ResultSet resultSet) throws SQLException {
         Instant start = Instant.now();
-        if (resultSet.next()) {
-            metrics.addCurrentResultSetNext(Duration.between(start, Instant.now()));
-            return true;
+        boolean result = false;
+        try {
+            if (resultSet.next()) {
+                metrics.addCurrentResultSetNext(Duration.between(start, Instant.now()));
+                result = true;
+            }
+
+            // Reset sequence unavailability on successful read from the result set
+            if (sequenceUnavailable) {
+                LOGGER.debug("The previous batch's unavailable log problem has been cleared.");
+                sequenceUnavailable = false;
+            }
         }
-        return false;
+        catch (SQLException e) {
+            // Oracle's online redo logs can be defined with dynamic names using the instance
+            // configuration property LOG_ARCHIVE_FORMAT.
+            //
+            // Dynamically named online redo logs can lead to ORA-00310 errors if a log switch
+            // happens while the processor is iterating the LogMiner session's result set and
+            // LogMiner can no longer read the next batch of records from the log.
+            //
+            // LogMiner only validates that there are no gaps and that the logs are available
+            // when the session is first started and any change in the logs later will raise
+            // these types of errors.
+            //
+            // Catching the ORA-00310 and treating it as the end of the result set will allow
+            // the connector's outer loop to re-evaluate the log state and start a new LogMiner
+            // session with the new logs. The connector will then begin streaming from where
+            // it left off. If any other exception is caught here, it'll be thrown.
+            if (!e.getMessage().startsWith("ORA-00310")) {
+                // throw any non ORA-00310 error, old behavior
+                throw e;
+            }
+            else if (sequenceUnavailable) {
+                // If an ORA-00310 error was raised on the previous iteration and wasn't cleared
+                // after re-evaluation of the log availability and the mining session, we will
+                // explicitly stop the connector to avoid an infinite loop.
+                LOGGER.error("The log availability error '{}' wasn't cleared, stop requested.", e.getMessage());
+                throw e;
+            }
+
+            LOGGER.debug("A mined log is no longer available: {}", e.getMessage());
+            LOGGER.warn("Restarting mining session after a log became unavailable.");
+
+            // Track that we gracefully stopped due to a ORA-00310.
+            // Will be used to detect an infinite loop of this error across sequential iterations
+            sequenceUnavailable = true;
+        }
+        return result;
     }
 
     /**
@@ -456,29 +541,7 @@ public abstract class AbstractLogMinerEventProcessor implements LogMinerEventPro
      * @param row the LogMiner event row
      * @param eventSupplier the supplier of the event to create if the event is allowed to be added
      */
-    protected void addToTransaction(String transactionId, LogMinerEventRow row, Supplier<LogMinerEvent> eventSupplier) {
-        if (isTransactionIdAllowed(transactionId)) {
-            Transaction transaction = getTransactionCache().get(transactionId);
-            if (transaction == null) {
-                LOGGER.trace("Transaction {} not in cache, creating.", transactionId);
-                transaction = new Transaction(transactionId, row.getScn(), row.getChangeTime());
-                getTransactionCache().put(transactionId, transaction);
-            }
-
-            // The event will only be registered with the transaction if the computed hash value
-            // does not already exist and is not 0. This is necessary to handle overlapping
-            // mining sessions when LOB support is enabled.
-            if (row.getHash() == 0L || !transaction.getHashes().contains(row.getHash())) {
-                if (row.getHash() != 0L) {
-                    transaction.getHashes().add(row.getHash());
-                }
-                LOGGER.trace("Adding {} to transaction {} for table '{}'.", row.getOperation(), transactionId, row.getTableId());
-                transaction.getEvents().add(eventSupplier.get());
-                metrics.setActiveTransactions(getTransactionCache().size());
-                metrics.calculateLagMetrics(row.getChangeTime());
-            }
-        }
-    }
+    protected abstract void addToTransaction(String transactionId, LogMinerEventRow row, Supplier<LogMinerEvent> eventSupplier);
 
     /**
      * Dispatch a schema change event for a new table and get the newly created relational table model.

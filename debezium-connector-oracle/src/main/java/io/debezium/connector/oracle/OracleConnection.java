@@ -12,6 +12,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Types;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -38,6 +39,7 @@ import io.debezium.relational.TableId;
 import io.debezium.relational.Tables;
 import io.debezium.relational.Tables.ColumnNameFilter;
 import io.debezium.relational.Tables.TableFilter;
+import io.debezium.util.Strings;
 
 import oracle.jdbc.OracleTypes;
 
@@ -65,8 +67,10 @@ public class OracleConnection extends JdbcConnection {
      */
     private final OracleDatabaseVersion databaseVersion;
 
+    private static final String QUOTED_CHARACTER = "\"";
+
     public OracleConnection(Configuration config, Supplier<ClassLoader> classLoaderSupplier) {
-        super(config, resolveConnectionFactory(config), classLoaderSupplier);
+        super(config, resolveConnectionFactory(config), classLoaderSupplier, QUOTED_CHARACTER, QUOTED_CHARACTER);
 
         this.databaseVersion = resolveOracleDatabaseVersion();
         LOGGER.info("Database Version: {}", databaseVersion.getBanner());
@@ -343,6 +347,41 @@ public class OracleConnection extends JdbcConnection {
     }
 
     /**
+     * Get the maximum system change number in the archive logs.
+     *
+     * @param archiveLogDestinationName the archive log destination name to be queried, can be {@code null}.
+     * @return the maximum system change number in the archive logs
+     * @throws SQLException if a database exception occurred
+     * @throws DebeziumException if the maximum archive log system change number could not be found
+     */
+    public Scn getMaxArchiveLogScn(String archiveLogDestinationName) throws SQLException {
+        String query = "SELECT MAX(NEXT_CHANGE#) FROM V$ARCHIVED_LOG " +
+                "WHERE NAME IS NOT NULL " +
+                "AND ARCHIVED = 'YES' " +
+                "AND STATUS = 'A' " +
+                "AND DEST_ID IN (" +
+                "SELECT DEST_ID FROM V$ARCHIVE_DEST_STATUS " +
+                "WHERE STATUS = 'VALID' " +
+                "AND TYPE = 'LOCAL' ";
+
+        if (Strings.isNullOrEmpty(archiveLogDestinationName)) {
+            query += "AND ROWNUM = 1";
+        }
+        else {
+            query += "AND UPPER(DEST_NAME) = '" + archiveLogDestinationName + "'";
+        }
+
+        query += ")";
+
+        return queryAndMap(query, (rs) -> {
+            if (rs.next()) {
+                return Scn.valueOf(rs.getString(1)).subtract(Scn.valueOf(1));
+            }
+            throw new DebeziumException("Could not obtain maximum archive log scn.");
+        });
+    }
+
+    /**
      * Generate a given table's DDL metadata.
      *
      * @param tableId table identifier, should never be {@code null}
@@ -403,7 +442,23 @@ public class OracleConnection extends JdbcConnection {
      * @throws SQLException if a database exception occurred
      */
     public boolean isTableEmpty(String tableName) throws SQLException {
-        return queryAndMap("SELECT COUNT(1) FROM " + tableName, rs -> rs.next() && rs.getLong(1) == 0);
+        return getRowCount(tableName) == 0L;
+    }
+
+    /**
+     * Returns the number of rows in a given table.
+     *
+     * @param tableName table name, should not be {@code null}
+     * @return the number of rows
+     * @throws SQLException if a database exception occurred
+     */
+    public long getRowCount(String tableName) throws SQLException {
+        return queryAndMap("SELECT COUNT(1) FROM " + tableName, rs -> {
+            if (rs.next()) {
+                return rs.getLong(1);
+            }
+            return 0L;
+        });
     }
 
     public <T> T singleOptionalValue(String query, ResultSetExtractor<T> extractor) throws SQLException {
@@ -443,5 +498,36 @@ public class OracleConnection extends JdbcConnection {
 
     private static ConnectionFactory resolveConnectionFactory(Configuration config) {
         return JdbcConnection.patternBasedFactory(connectionString(config));
+    }
+
+    /**
+     * Resolve a system change number to a timestamp, return value is in database timezone.
+     *
+     * The SCN to TIMESTAMP mapping is only retained for the duration of the flashback query area.
+     * This means that eventually the mapping between these values are no longer kept by Oracle
+     * and making a call with a SCN value that has aged out will result in an ORA-08181 error.
+     * This function explicitly checks for this use case and if a ORA-08181 error is thrown, it is
+     * therefore treated as if a value does not exist returning an empty optional value.
+     *
+     * @param scn the system change number, must not be {@code null}
+     * @return an optional timestamp when the system change number occurred
+     * @throws SQLException if a database exception occurred
+     */
+    public Optional<OffsetDateTime> getScnToTimestamp(Scn scn) throws SQLException {
+        try {
+            return queryAndMap("SELECT scn_to_timestamp('" + scn + "') FROM DUAL", rs -> rs.next()
+                    ? Optional.of(rs.getObject(1, OffsetDateTime.class))
+                    : Optional.empty());
+        }
+        catch (SQLException e) {
+            if (e.getMessage().startsWith("ORA-08181")) {
+                // ORA-08181 specified number is not a valid system change number
+                // This happens when the SCN provided is outside the flashback area range
+                // This should be treated as a value is not available rather than an error
+                return Optional.empty();
+            }
+            // Any other SQLException should be thrown
+            throw e;
+        }
     }
 }
