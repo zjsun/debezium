@@ -9,6 +9,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
 import java.util.function.Supplier;
 
 import org.slf4j.Logger;
@@ -91,13 +92,12 @@ public abstract class AbstractLogMinerEventProcessor<T extends AbstractTransacti
     }
 
     /**
-     * Check whether a transaction has been recently committed.
-     * Any implementation that does not support recently-committed tracking should return false.
+     * Check whether a transaction has been recently processed through either a commit or rollback.
      *
      * @param transactionId the unique transaction id
-     * @return true if the transaction has been recently committed, false otherwise
+     * @return true if the transaction has been recently processed, false otherwise
      */
-    protected boolean isRecentlyCommitted(String transactionId) {
+    protected boolean isRecentlyProcessed(String transactionId) {
         return false;
     }
 
@@ -109,17 +109,6 @@ public abstract class AbstractLogMinerEventProcessor<T extends AbstractTransacti
      */
     protected boolean hasSchemaChangeBeenSeen(LogMinerEventRow row) {
         return false;
-    }
-
-    /**
-     * Return whether a give transaction can be added to the processor's buffer.
-     * The default implementation is to allow all transaction ids.
-     *
-     * @param transactionId the unique transaction id
-     * @return whether a transaction id can be added to the processor's buffer
-     */
-    protected boolean isTransactionIdAllowed(String transactionId) {
-        return true;
     }
 
     /**
@@ -135,7 +124,7 @@ public abstract class AbstractLogMinerEventProcessor<T extends AbstractTransacti
      * Returns the {@code TransactionCache} implementation.
      * @return the transaction cache, never {@code null}
      */
-    protected abstract TransactionCache<T, ?> getTransactionCache();
+    protected abstract Map<String, T> getTransactionCache();
 
     /**
      * Creates a new transaction based on the supplied {@code START} event.
@@ -239,11 +228,11 @@ public abstract class AbstractLogMinerEventProcessor<T extends AbstractTransacti
     protected void handleStart(LogMinerEventRow row) {
         final String transactionId = row.getTransactionId();
         final AbstractTransaction transaction = getTransactionCache().get(transactionId);
-        if (transaction == null && !isRecentlyCommitted(transactionId)) {
+        if (transaction == null && !isRecentlyProcessed(transactionId)) {
             getTransactionCache().put(transactionId, createTransaction(row));
             metrics.setActiveTransactions(getTransactionCache().size());
         }
-        else if (transaction != null && !isRecentlyCommitted(transactionId)) {
+        else if (transaction != null && !isRecentlyProcessed(transactionId)) {
             LOGGER.trace("Transaction {} is not yet committed and START event detected.", transactionId);
             transaction.start();
         }
@@ -607,7 +596,7 @@ public abstract class AbstractLogMinerEventProcessor<T extends AbstractTransacti
         LogMinerDmlEntry dmlEntry;
         try {
             Instant parseStart = Instant.now();
-            dmlEntry = dmlParser.parse(redoSql, table, transactionId);
+            dmlEntry = dmlParser.parse(redoSql, table);
             metrics.addCurrentParseTime(Duration.between(parseStart, Instant.now()));
         }
         catch (DmlParserException e) {
@@ -654,6 +643,12 @@ public abstract class AbstractLogMinerEventProcessor<T extends AbstractTransacti
 
         throw new DebeziumException("Unable to parse unsupported LOB_WRITE SQL: " + sql);
     }
+
+    /**
+     * Gets the minimum system change number stored in the transaction cache.
+     * @return the minimum system change number, never {@code null} but could be {@link Scn#NULL}.
+     */
+    protected abstract Scn getTransactionCacheMinimumScn();
 
     /**
      * Wrapper for all counter variables

@@ -354,6 +354,9 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
             // Capture that we've completed another event ...
             offsetContext.completeEvent();
 
+            // update last offset used for logging
+            lastOffset = offsetContext.getOffset();
+
             if (skipEvent) {
                 // We're in the mode of skipping events and we just skipped this one, so decrement our skip count ...
                 --initialEventsToSkip;
@@ -811,7 +814,9 @@ public class MySqlStreamingChangeEventSource implements StreamingChangeEventSour
             LOGGER.info("Streaming is disabled for snapshot mode {}", connectorConfig.getSnapshotMode());
             return;
         }
-        taskContext.getSchema().assureNonEmptySchema();
+        if (connectorConfig.getSnapshotMode() != MySqlConnectorConfig.SnapshotMode.NEVER) {
+            taskContext.getSchema().assureNonEmptySchema();
+        }
         final Set<Operation> skippedOperations = connectorConfig.getSkippedOperations();
 
         final MySqlOffsetContext effectiveOffsetContext = offsetContext != null

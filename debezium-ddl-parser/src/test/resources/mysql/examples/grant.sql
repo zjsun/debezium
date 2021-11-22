@@ -1,5 +1,6 @@
 GRANT ALL ON tbl TO admin@localhost;
 GRANT ALL ON tbl TO admin;
+GRANT ALL ON tbl TO audit_admin;
 GRANT ALL PRIVILEGES ON tbl TO admin;
 GRANT ALL ON *.* TO admin;
 GRANT USAGE ON *.* TO foo2@test IDENTIFIED BY 'mariadb';
@@ -92,6 +93,7 @@ GRANT reader TO 'mysqluser'@'localhost'
 GRANT reader TO topreader
 REVOKE reader FROM 'mysqluser'@'localhost'
 REVOKE reader FROM topreader
+REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'retool'@
 
 -- MariaDB
 GRANT BINLOG_MONITOR ON *.* TO 'mysqluser'@'localhost'

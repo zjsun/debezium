@@ -2,6 +2,7 @@ Cobolbaby
 Aaron Brady
 Aaron Rosenberg
 Abhishek Gupta
+Abhishek Hodavdekar
 Addison Higham
 Adham
 Adrian Kreuziger
@@ -101,6 +102,7 @@ Eric S. Kreiseir
 Erik Malm
 Ewen Cheslack-Postava
 Fabian Aussems
+Fabian Martinez
 Fabio Cantarini
 Fahim Farook
 Faizan
@@ -119,10 +121,12 @@ Guillaume Rosauro
 Guillaume Smet
 Gunnar Morling
 Gurnaaz Randhawa
+Guy Korland
 Guy Pascarella
 Grzegorz Kołakowski
 Jan Hendrik Dolling
 Jiabao Sun
+Juan Fiallo
 Hans-Peter Grahsl
 Harvey Yue
 Henryk Konsek
@@ -250,6 +254,7 @@ Peter Junos
 Peter Larsson
 Peter Urbanetz
 Philip Sanetra
+Plugaru Tudor
 Pradeep Mamillapalli
 Prannoy Mittal
 Preethi Sadagopan
@@ -297,6 +302,7 @@ Stathis Souris
 Stefan Miklosovic
 Stephen Powis
 Steven Siahetiong
+Sungho Hwang
 Syed Muhammad Sufyian
 Tapani Moilanen
 Tautvydas Januskevicius
@@ -334,7 +340,9 @@ Willie Cheong
 Willie Zhu
 Wout Scheepers
 Xiao Fu
+Xiaopu Zhu
 Xuan Shen
+Yang Wu
 Yang Yang
 yangsanity
 Yilong Chang
@@ -344,7 +352,10 @@ Yossi Shirizli
 Yuan Zhang
 Yuiham Chan
 Zheng Wang
+Zongwen Li
 Zoran Regvart
 志飞 张
-李宗文
 민규 김
+李宗文
+陆杰
+Ünal Sürmeli

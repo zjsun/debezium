@@ -67,7 +67,7 @@ public class LogMinerDmlParser implements DmlParser {
     private static final int WHERE_LENGTH = WHERE.length();
 
     @Override
-    public LogMinerDmlEntry parse(String sql, Table table, String txId) {
+    public LogMinerDmlEntry parse(String sql, Table table) {
         if (table == null) {
             throw new DmlParserException("DML parser requires a non-null table");
         }

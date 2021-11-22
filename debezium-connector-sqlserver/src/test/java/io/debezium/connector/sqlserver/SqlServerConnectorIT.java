@@ -51,6 +51,7 @@ import io.debezium.data.VerifyRecord;
 import io.debezium.doc.FixFor;
 import io.debezium.embedded.AbstractConnectorTest;
 import io.debezium.junit.logging.LogInterceptor;
+import io.debezium.pipeline.spi.Offsets;
 import io.debezium.relational.RelationalDatabaseConnectorConfig;
 import io.debezium.relational.Tables;
 import io.debezium.relational.ddl.DdlParser;
@@ -2515,6 +2516,27 @@ public class SqlServerConnectorIT extends AbstractConnectorTest {
 
     }
 
+    @Test
+    @FixFor("DBZ-2975")
+    public void shouldIncludeDatabaseNameIntoTopicAndSchemaNamesInMultiPartitionMode() throws Exception {
+        final Configuration config = TestHelper.defaultMultiPartitionConfig()
+                .with(SqlServerConnectorConfig.SNAPSHOT_MODE, SnapshotMode.INITIAL)
+                .build();
+
+        start(SqlServerConnector.class, config);
+        assertConnectorIsRunning();
+
+        TestHelper.waitForSnapshotToBeCompleted();
+
+        final SourceRecords records = consumeRecordsByTopic(1);
+        final List<SourceRecord> tableA = records.recordsForTopic("server1.testDB.dbo.tablea");
+        Assertions.assertThat(tableA).hasSize(1);
+
+        final SourceRecord record = tableA.get(0);
+        assertThat(record.keySchema().name()).isEqualTo("server1.testDB.dbo.tablea.Key");
+        assertThat(record.valueSchema().name()).isEqualTo("server1.testDB.dbo.tablea.Envelope");
+    }
+
     private void assertRecord(Struct record, List<SchemaAndValueField> expected) {
         expected.forEach(schemaAndValueField -> schemaAndValueField.assertFor(record));
     }
@@ -2558,8 +2580,13 @@ public class SqlServerConnectorIT extends AbstractConnectorTest {
         }
 
         @Override
-        public void recover(Map<String, ?> source, Map<String, ?> position, Tables schema, DdlParser ddlParser) {
-            delegate.recover(source, position, schema, ddlParser);
+        public void recover(Offsets<?, ?> offsets, Tables schema, DdlParser ddlParser) {
+            delegate.recover(offsets, schema, ddlParser);
+        }
+
+        @Override
+        public void recover(Map<Map<String, ?>, Map<String, ?>> offsets, Tables schema, DdlParser ddlParser) {
+            delegate.recover(offsets, schema, ddlParser);
         }
 
         @Override

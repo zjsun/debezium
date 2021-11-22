@@ -59,6 +59,7 @@ import org.postgresql.util.PSQLState;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import io.debezium.DebeziumException;
 import io.debezium.config.CommonConnectorConfig;
 import io.debezium.config.CommonConnectorConfig.Version;
 import io.debezium.config.Configuration;
@@ -267,7 +268,7 @@ public class PostgresConnectorIT extends AbstractConnectorTest {
             if (TestHelper.shouldSSLConnectionFail()) {
                 // we expect the task to fail at startup when we're printing the server info
                 assertThat(success).isFalse();
-                assertThat(error).isInstanceOf(ConnectException.class);
+                assertThat(error).isInstanceOf(DebeziumException.class);
                 Throwable cause = error.getCause();
                 assertThat(cause).isInstanceOf(SQLException.class);
                 assertThat(PSQLState.CONNECTION_REJECTED.getState().equals(((SQLException) cause).getSQLState()));
@@ -666,7 +667,9 @@ public class PostgresConnectorIT extends AbstractConnectorTest {
     public void showThatSchemaColumnDefaultMayApplyRetroactively() throws Exception {
         Testing.Print.enable();
         final String slotName = "default_change" + new Random().nextInt(100);
-        TestHelper.create().dropReplicationSlot(slotName);
+        try (PostgresConnection conn = TestHelper.create()) {
+            conn.dropReplicationSlot(slotName);
+        }
         try {
             final PostgresConnectorConfig config = new PostgresConnectorConfig(TestHelper.defaultConfig()
                     .with(PostgresConnectorConfig.INCLUDE_UNKNOWN_DATATYPES, Boolean.FALSE)
@@ -758,7 +761,9 @@ public class PostgresConnectorIT extends AbstractConnectorTest {
             });
 
             stopConnector();
-            TestHelper.create().dropReplicationSlot(slotName);
+            try (PostgresConnection conn = TestHelper.create()) {
+                conn.dropReplicationSlot(slotName);
+            }
 
             TestHelper.execute("DROP SCHEMA IF EXISTS default_change CASCADE;");
         }
@@ -1291,6 +1296,7 @@ public class PostgresConnectorIT extends AbstractConnectorTest {
                 .build();
         start(PostgresConnector.class, config);
         assertConnectorIsRunning();
+        waitForStreamingRunning();
         // Generate empty logical decoding message
         TestHelper.execute(statement);
         waitForAvailableRecords(1000, TimeUnit.MILLISECONDS);
@@ -1957,6 +1963,7 @@ public class PostgresConnectorIT extends AbstractConnectorTest {
 
     @Test
     @FixFor("DBZ-2094")
+    @SkipWhenDecoderPluginNameIs(value = SkipWhenDecoderPluginNameIs.DecoderPluginName.WAL2JSON, reason = "Unstable with WAL2JSON plugin, leads to long build time and fails after 6h")
     public void customSnapshotterSkipsTablesOnRestartWithConcurrentTx() throws Exception {
         final LogInterceptor logInterceptor = new LogInterceptor();
 
@@ -2839,6 +2846,41 @@ public class PostgresConnectorIT extends AbstractConnectorTest {
         else {
             assertNotEquals(getSequence(records.get(5)), getSequence(records.get(6)));
         }
+    }
+
+    @Test
+    @FixFor("DBZ-1042")
+    public void testCreateNumericReplicationSlotName() throws Exception {
+        TestHelper.execute(SETUP_TABLES_STMT);
+        Configuration.Builder configBuilder = TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.SLOT_NAME, "12345");
+        start(PostgresConnector.class, configBuilder.build());
+        waitForStreamingRunning();
+        assertConnectorIsRunning();
+    }
+
+    @Test
+    @FixFor("DBZ-1042")
+    public void testStreamingWithNumericReplicationSlotName() throws Exception {
+        TestHelper.execute(SETUP_TABLES_STMT);
+        Configuration.Builder configBuilder = TestHelper.defaultConfig()
+                .with(PostgresConnectorConfig.SLOT_NAME, "12345");
+        start(PostgresConnector.class, configBuilder.build());
+        waitForStreamingRunning();
+        assertConnectorIsRunning();
+
+        // insert records
+        TestHelper.execute("INSERT into s1.a VALUES(201, 1)");
+        TestHelper.execute("INSERT into s1.a VALUES(202, 2)");
+        TestHelper.execute("INSERT into s1.a VALUES(203, 3)");
+
+        SourceRecords records = consumeRecordsByTopic(5);
+        List<SourceRecord> recordsForTopic = records.recordsForTopic(topicName("s1.a"));
+
+        assertThat(recordsForTopic.size()).isEqualTo(4);
+        assertInsert(recordsForTopic.get(1), PK_FIELD, 201);
+        assertInsert(recordsForTopic.get(2), PK_FIELD, 202);
+        assertInsert(recordsForTopic.get(3), PK_FIELD, 203);
     }
 
     private Predicate<SourceRecord> stopOnPKPredicate(int pkValue) {

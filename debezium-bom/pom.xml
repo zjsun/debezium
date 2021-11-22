@@ -3,7 +3,7 @@
     <parent>
         <groupId>io.debezium</groupId>
         <artifactId>debezium-build-parent</artifactId>
-        <version>1.7.0-SNAPSHOT</version>
+        <version>1.8.0-SNAPSHOT</version>
 	<relativePath>../pom.xml</relativePath>
     </parent>
     <modelVersion>4.0.0</modelVersion>
@@ -24,7 +24,7 @@
         <version.jetty>9.4.12.v20180830</version.jetty>
 
         <!-- Vitess dependencies -->
-        <version.vitess.grpc>9.0.0</version.vitess.grpc>
+        <version.vitess.grpc>12.0.0</version.vitess.grpc>
         <version.gson>2.7</version.gson>
         <version.grpc>1.33.0</version.grpc>
         <version.joda>2.10.1</version.joda>
@@ -50,7 +50,7 @@
         <version.jmh>1.21</version.jmh>
         <version.mockito>3.0.0</version.mockito>
         <version.awaitility>4.0.1</version.awaitility>
-        <version.testcontainers>1.15.1</version.testcontainers>
+        <version.testcontainers>1.16.1</version.testcontainers>
         <version.jsonpath>2.4.0</version.jsonpath>
         <version.jsonassert>1.5.0</version.jsonassert>
         <version.org.reflections>0.9.12</version.org.reflections>
@@ -426,6 +426,11 @@
             <dependency>
                 <groupId>org.infinispan</groupId>
                 <artifactId>infinispan-core</artifactId>
+                <version>${version.infinispan}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.infinispan</groupId>
+                <artifactId>infinispan-client-hotrod</artifactId>
                 <version>${version.infinispan}</version>
             </dependency>
             <dependency>

@@ -25,6 +25,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.data.SchemaBuilder;
 import org.fest.assertions.Assertions;
 import org.junit.Before;
 import org.junit.Test;
@@ -35,9 +37,12 @@ import io.debezium.doc.FixFor;
 import io.debezium.jdbc.JdbcValueConverters;
 import io.debezium.jdbc.TemporalPrecisionMode;
 import io.debezium.relational.Column;
+import io.debezium.relational.CustomConverterRegistry;
 import io.debezium.relational.SystemVariables;
 import io.debezium.relational.Table;
 import io.debezium.relational.TableId;
+import io.debezium.relational.TableSchema;
+import io.debezium.relational.TableSchemaBuilder;
 import io.debezium.relational.Tables;
 import io.debezium.relational.Tables.TableFilter;
 import io.debezium.relational.ddl.DdlChanges;
@@ -46,6 +51,7 @@ import io.debezium.relational.ddl.DdlParserListener.Event;
 import io.debezium.relational.ddl.SimpleDdlParserListener;
 import io.debezium.time.ZonedTimestamp;
 import io.debezium.util.IoUtil;
+import io.debezium.util.SchemaNameAdjuster;
 import io.debezium.util.Testing;
 
 /**
@@ -56,12 +62,23 @@ public class MySqlAntlrDdlParserTest {
     private DdlParser parser;
     private Tables tables;
     private SimpleDdlParserListener listener;
+    private MySqlValueConverters converters;
+    private TableSchemaBuilder tableSchemaBuilder;
 
     @Before
     public void beforeEach() {
         listener = new SimpleDdlParserListener();
         parser = new MysqlDdlParserWithSimpleTestListener(listener);
         tables = new Tables();
+        converters = new MySqlValueConverters(
+                JdbcValueConverters.DecimalMode.DOUBLE,
+                TemporalPrecisionMode.ADAPTIVE_TIME_MICROSECONDS,
+                JdbcValueConverters.BigIntUnsignedMode.PRECISE,
+                BinaryHandlingMode.BYTES);
+        tableSchemaBuilder = new TableSchemaBuilder(
+                converters,
+                new MySqlDefaultValueConverter(converters),
+                SchemaNameAdjuster.create(), new CustomConverterRegistry(null), SchemaBuilder.struct().build(), false, false);
     }
 
     @Test
@@ -87,6 +104,57 @@ public class MySqlAntlrDdlParserTest {
         table = tables.forTable("database2", null, "table2");
         assertThat(table.columns()).hasSize(2);
         assertThat(table.columnWithName("x1").charsetName()).isEqualTo("latin2");
+    }
+
+    @Test
+    @FixFor("DBZ-4000")
+    public void shouldProcessCommentForTable() {
+        parser = new MysqlDdlParserWithSimpleTestListener(listener, false, true);
+        parser.parse("CREATE TABLE table1(\n"
+                + "id INT UNSIGNED NOT NULL AUTO_INCREMENT UNIQUE PRIMARY KEY COMMENT 'pk',\n"
+                + "bin_volume DECIMAL(20, 4) COMMENT 'decimal column'\n"
+                + ") COMMENT='add table comment'", tables);
+        parser.parse("CREATE TABLE table2(id INT NOT NULL)", tables);
+        parser.parse("ALTER TABLE table2 COMMENT='alter table comment'", tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+        assertThat(tables.size()).isEqualTo(2);
+
+        Table table = tables.forTable(null, null, "table1");
+        assertThat(table.columnWithName("id").comment()).isEqualTo("pk");
+        assertThat(table.columnWithName("bin_volume").comment()).isEqualTo("decimal column");
+        assertThat(table.comment()).isEqualTo("add table comment");
+        table = tables.forTable(null, null, "table2");
+        assertThat(table.comment()).isEqualTo("alter table comment");
+    }
+
+    @Test
+    @FixFor("DBZ-4193")
+    public void shouldAllowAggregateWindowedFunction() {
+        String selectSql = "SELECT e.id,\n"
+                + "SUM(e.bin_volume) AS bin_volume,\n"
+                + "SUM(e.bin_volume) OVER(PARTITION BY id, e.bin_volume ORDER BY id) AS bin_volume_o,\n"
+                + "COALESCE(bin_volume, 0) AS bin_volume2,\n"
+                + "COALESCE(LAG(e.bin_volume) OVER(PARTITION BY id ORDER BY e.id), 0) AS bin_volume3,\n"
+                + "FIRST_VALUE(id) OVER() AS fv,\n"
+                + "DENSE_RANK() OVER(PARTITION BY bin_name ORDER BY id) AS drk,\n"
+                + "RANK() OVER(PARTITION BY bin_name) AS rk,\n"
+                + "ROW_NUMBER ( ) OVER(PARTITION BY bin_name) AS rn,\n"
+                + "NTILE(2) OVER() AS nt\n"
+                + "FROM table1 e";
+        parser.parse(selectSql, tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
+
+        selectSql = "SELECT id,\n"
+                + "SUM(bin_volume) OVER w AS bin_volume_o,\n"
+                + "LAG(bin_volume) OVER w AS bin_volume_l,\n"
+                + "LAG(bin_volume, 2) OVER w AS bin_volume_l2,\n"
+                + "FIRST_VALUE(id) OVER w2 AS fv,\n"
+                + "GROUP_CONCAT(bin_volume order by id) AS `rank`\n"
+                + "FROM table1\n"
+                + "WINDOW w AS (PARTITION BY id, bin_volume ORDER BY id ROWS UNBOUNDED PRECEDING),\n"
+                + "w2 AS (PARTITION BY id, bin_volume ORDER BY id DESC ROWS 10 PRECEDING)";
+        parser.parse(selectSql, tables);
+        assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
     }
 
     @Test
@@ -180,7 +248,7 @@ public class MySqlAntlrDdlParserTest {
         assertThat(table.columns()).hasSize(2);
         // The default value is computed for column dynamically so we set default to null
         assertThat(table.columnWithName("bin_volume").hasDefaultValue()).isTrue();
-        assertThat(table.columnWithName("bin_volume").defaultValue()).isNull();
+        assertThat(getColumnSchema(table, "bin_volume").defaultValue()).isNull();
     }
 
     @Test
@@ -229,13 +297,17 @@ public class MySqlAntlrDdlParserTest {
     }
 
     @Test
-    @FixFor("DBZ-2604")
+    @FixFor({ "DBZ-2604", "DBZ-4246", "DBZ-4261" })
     public void shouldUseDatabaseCharacterSet() {
         String ddl = "CREATE DATABASE `mydb` character set UTF8mb4 collate utf8mb4_unicode_ci;"
-                + "CREATE TABLE mydb.mytable (id INT PRIMARY KEY, val1 CHAR(16) CHARSET latin2, val2 CHAR(5));";
+                + "create database `ymsun_test1` charset gb18030 collate gb18030_bi;"
+                + "create database `test` charset binary collate binary;"
+                + "CREATE TABLE mydb.mytable (id INT PRIMARY KEY, val1 CHAR(16) CHARSET latin2, val2 CHAR(5));"
+                + "CREATE TABLE ymsun_test1.mytable (id INT PRIMARY KEY, val1 CHAR(16) CHARSET latin2, val2 CHAR(5));"
+                + "CREATE TABLE `test`.`tb1` (`id` int NOT NULL AUTO_INCREMENT,`v1` varchar(255), PRIMARY KEY (`id`));";
         parser.parse(ddl, tables);
         assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
-        assertThat(tables.size()).isEqualTo(1);
+        assertThat(tables.size()).isEqualTo(3);
 
         Table table = tables.forTable(null, null, "mydb.mytable");
         assertThat(table.columns()).hasSize(3);
@@ -244,6 +316,12 @@ public class MySqlAntlrDdlParserTest {
         assertThat(table.columnWithName("val2")).isNotNull();
         assertThat(table.columnWithName("val1").charsetName()).isEqualTo("latin2");
         assertThat(table.columnWithName("val2").charsetName()).isEqualTo("UTF8mb4");
+
+        table = tables.forTable(null, null, "ymsun_test1.mytable");
+        assertThat(table.columnWithName("val2").charsetName()).isEqualTo("gb18030");
+
+        table = tables.forTable(null, null, "test.tb1");
+        assertThat(table.columnWithName("v1").charsetName()).isEqualTo("binary");
     }
 
     @Test
@@ -333,7 +411,7 @@ public class MySqlAntlrDdlParserTest {
         assertThat(table.columnWithName("id")).isNotNull();
         assertThat(table.columnWithName("val1")).isNotNull();
         assertThat(table.columnWithName("last_val")).isNotNull();
-        assertThat(table.columnWithName("last_val").defaultValue()).isNull();
+        assertThat(getColumnSchema(table, "last_val").defaultValue()).isNull();
 
         parser.parse("ALTER TABLE mytable CHANGE COLUMN last_val last_val INT NOT NULL;", tables);
         assertThat(((MySqlAntlrDdlParser) parser).getParsingExceptionsFromWalker().size()).isEqualTo(0);
@@ -362,7 +440,7 @@ public class MySqlAntlrDdlParserTest {
         assertThat(table.columnWithName("id")).isNotNull();
         assertThat(table.columnWithName("val1")).isNotNull();
         assertThat(table.columnWithName("last_val")).isNotNull();
-        assertThat(table.columnWithName("last_val").defaultValue()).isEqualTo(10);
+        assertThat(getColumnSchema(table, "last_val").defaultValue()).isEqualTo(10);
     }
 
     @Test
@@ -2704,13 +2782,13 @@ public class MySqlAntlrDdlParserTest {
         parser.parse(ddl, tables);
         Table table = tables.forTable(new TableId(null, null, "tmp"));
         assertThat(table.columnWithName("id").isOptional()).isEqualTo(false);
-        assertThat(table.columnWithName("columnA").defaultValue()).isEqualTo("A");
-        assertThat(table.columnWithName("columnB").defaultValue()).isEqualTo(1);
-        assertThat(table.columnWithName("columnC").defaultValue()).isEqualTo("C");
-        assertThat(table.columnWithName("columnD").defaultValue()).isEqualTo(null);
-        assertThat(table.columnWithName("columnE").defaultValue()).isEqualTo(null);
-        assertThat(table.columnWithName("my_dateA").defaultValue()).isEqualTo(LocalDateTime.of(2018, 4, 27, 13, 28, 43).toEpochSecond(ZoneOffset.UTC) * 1_000);
-        assertThat(table.columnWithName("my_dateB").defaultValue()).isEqualTo(LocalDateTime.of(9999, 12, 31, 0, 0, 0).toEpochSecond(ZoneOffset.UTC) * 1_000);
+        assertThat(getColumnSchema(table, "columnA").defaultValue()).isEqualTo("A");
+        assertThat(getColumnSchema(table, "columnB").defaultValue()).isEqualTo(1);
+        assertThat(getColumnSchema(table, "columnC").defaultValue()).isEqualTo("C");
+        assertThat(getColumnSchema(table, "columnD").defaultValue()).isEqualTo(null);
+        assertThat(getColumnSchema(table, "columnE").defaultValue()).isEqualTo(null);
+        assertThat(getColumnSchema(table, "my_dateA").defaultValue()).isEqualTo(LocalDateTime.of(2018, 4, 27, 13, 28, 43).toEpochSecond(ZoneOffset.UTC) * 1_000);
+        assertThat(getColumnSchema(table, "my_dateB").defaultValue()).isEqualTo(LocalDateTime.of(9999, 12, 31, 0, 0, 0).toEpochSecond(ZoneOffset.UTC) * 1_000);
     }
 
     @Test
@@ -2727,7 +2805,7 @@ public class MySqlAntlrDdlParserTest {
         Table tableDef = tables.forTable(new TableId(null, null, "datadef"));
         assertThat(tableDef.columnWithName("id").isOptional()).isEqualTo(false);
         assertThat(tableDef.columnWithName("id").hasDefaultValue()).isEqualTo(true);
-        assertThat(tableDef.columnWithName("id").defaultValue()).isEqualTo(0);
+        assertThat(getColumnSchema(tableDef, "id").defaultValue()).isEqualTo(0);
 
         ddl = "DROP TABLE IF EXISTS data; " +
                 "CREATE TABLE data(id INT DEFAULT 1, PRIMARY KEY (id))";
@@ -2736,7 +2814,7 @@ public class MySqlAntlrDdlParserTest {
         table = tables.forTable(new TableId(null, null, "data"));
         assertThat(table.columnWithName("id").isOptional()).isEqualTo(false);
         assertThat(table.columnWithName("id").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("id").defaultValue()).isEqualTo(1);
+        assertThat(getColumnSchema(table, "id").defaultValue()).isEqualTo(1);
     }
 
     @Test
@@ -2754,15 +2832,15 @@ public class MySqlAntlrDdlParserTest {
 
         assertThat(table.columnWithName("ts_col").isOptional()).isEqualTo(false);
         assertThat(table.columnWithName("ts_col").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col").defaultValue()).isEqualTo(isoEpoch);
+        assertThat(getColumnSchema(table, "ts_col").defaultValue()).isEqualTo(isoEpoch);
 
         assertThat(table.columnWithName("ts_col2").isOptional()).isEqualTo(false);
         assertThat(table.columnWithName("ts_col2").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col2").defaultValue()).isEqualTo(isoEpoch);
+        assertThat(getColumnSchema(table, "ts_col2").defaultValue()).isEqualTo(isoEpoch);
 
         assertThat(table.columnWithName("ts_col3").isOptional()).isEqualTo(true);
         assertThat(table.columnWithName("ts_col3").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col3").defaultValue()).isNull();
+        assertThat(getColumnSchema(table, "ts_col3").defaultValue()).isNull();
 
         final String alter1 = "ALTER TABLE my_table " +
                 " ADD ts_col4 TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL;";
@@ -2773,7 +2851,7 @@ public class MySqlAntlrDdlParserTest {
         assertThat(table.columns().size()).isEqualTo(4);
         assertThat(table.columnWithName("ts_col4").isOptional()).isEqualTo(false);
         assertThat(table.columnWithName("ts_col4").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col4").defaultValue()).isEqualTo(isoEpoch);
+        assertThat(getColumnSchema(table, "ts_col4").defaultValue()).isEqualTo(isoEpoch);
 
         final String alter2 = "ALTER TABLE my_table " +
                 " ADD ts_col5 TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP";
@@ -2784,7 +2862,7 @@ public class MySqlAntlrDdlParserTest {
         assertThat(table.columns().size()).isEqualTo(5);
         assertThat(table.columnWithName("ts_col5").isOptional()).isEqualTo(false);
         assertThat(table.columnWithName("ts_col5").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col5").defaultValue()).isEqualTo(isoEpoch);
+        assertThat(getColumnSchema(table, "ts_col5").defaultValue()).isEqualTo(isoEpoch);
     }
 
     @Test
@@ -2822,55 +2900,55 @@ public class MySqlAntlrDdlParserTest {
 
         Table table = tables.forTable(new TableId(null, null, "my_table"));
         assertThat(table.columnWithName("ts_col01").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col01").defaultValue()).isEqualTo(toIsoString("2020-01-02 00:00:00"));
+        assertThat(getColumnSchema(table, "ts_col01").defaultValue()).isEqualTo(toIsoString("2020-01-02 00:00:00"));
         assertThat(table.columnWithName("ts_col02").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col02").defaultValue()).isEqualTo(toIsoString("2020-01-02 00:00:00"));
+        assertThat(getColumnSchema(table, "ts_col02").defaultValue()).isEqualTo(toIsoString("2020-01-02 00:00:00"));
         assertThat(table.columnWithName("ts_col03").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col03").defaultValue()).isEqualTo(toIsoString("2020-01-02 00:00:00"));
+        assertThat(getColumnSchema(table, "ts_col03").defaultValue()).isEqualTo(toIsoString("2020-01-02 00:00:00"));
         assertThat(table.columnWithName("ts_col04").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col04").defaultValue()).isEqualTo(toIsoString("2020-01-02 00:00:00"));
+        assertThat(getColumnSchema(table, "ts_col04").defaultValue()).isEqualTo(toIsoString("2020-01-02 00:00:00"));
         assertThat(table.columnWithName("ts_col05").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col05").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:00:00"));
+        assertThat(getColumnSchema(table, "ts_col05").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:00:00"));
         assertThat(table.columnWithName("ts_col06").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col06").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:00:00"));
+        assertThat(getColumnSchema(table, "ts_col06").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:00:00"));
         assertThat(table.columnWithName("ts_col07").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col07").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:00:00"));
+        assertThat(getColumnSchema(table, "ts_col07").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:00:00"));
         assertThat(table.columnWithName("ts_col08").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col08").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
+        assertThat(getColumnSchema(table, "ts_col08").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
         assertThat(table.columnWithName("ts_col09").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col09").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
+        assertThat(getColumnSchema(table, "ts_col09").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
         assertThat(table.columnWithName("ts_col10").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col10").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
+        assertThat(getColumnSchema(table, "ts_col10").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
         assertThat(table.columnWithName("ts_col11").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col11").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05.123456"));
+        assertThat(getColumnSchema(table, "ts_col11").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05.123456"));
         assertThat(table.columnWithName("ts_col12").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col12").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
+        assertThat(getColumnSchema(table, "ts_col12").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
         assertThat(table.columnWithName("ts_col13").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col13").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
+        assertThat(getColumnSchema(table, "ts_col13").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
         assertThat(table.columnWithName("ts_col14").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col14").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
+        assertThat(getColumnSchema(table, "ts_col14").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
         assertThat(table.columnWithName("ts_col15").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col15").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
+        assertThat(getColumnSchema(table, "ts_col15").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
         assertThat(table.columnWithName("ts_col16").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col16").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
+        assertThat(getColumnSchema(table, "ts_col16").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
         assertThat(table.columnWithName("ts_col17").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col17").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
+        assertThat(getColumnSchema(table, "ts_col17").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
         assertThat(table.columnWithName("ts_col18").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col18").defaultValue()).isEqualTo(toIsoString("1970-01-01 00:00:01"));
+        assertThat(getColumnSchema(table, "ts_col18").defaultValue()).isEqualTo(toIsoString("1970-01-01 00:00:01"));
         assertThat(table.columnWithName("ts_col19").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col19").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
+        assertThat(getColumnSchema(table, "ts_col19").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
         assertThat(table.columnWithName("ts_col20").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col20").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
+        assertThat(getColumnSchema(table, "ts_col20").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
         assertThat(table.columnWithName("ts_col21").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col21").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
+        assertThat(getColumnSchema(table, "ts_col21").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
         assertThat(table.columnWithName("ts_col22").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col22").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
+        assertThat(getColumnSchema(table, "ts_col22").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
         assertThat(table.columnWithName("ts_col23").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col23").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
+        assertThat(getColumnSchema(table, "ts_col23").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
         assertThat(table.columnWithName("ts_col24").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col24").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
+        assertThat(getColumnSchema(table, "ts_col24").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
         assertThat(table.columnWithName("ts_col25").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col25").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
+        assertThat(getColumnSchema(table, "ts_col25").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:00"));
 
         final String alter1 = "ALTER TABLE my_table ADD ts_col TIMESTAMP DEFAULT '2020-01-02';";
 
@@ -2878,7 +2956,7 @@ public class MySqlAntlrDdlParserTest {
         table = tables.forTable(new TableId(null, null, "my_table"));
 
         assertThat(table.columnWithName("ts_col").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col").defaultValue()).isEqualTo(toIsoString("2020-01-02 00:00:00"));
+        assertThat(getColumnSchema(table, "ts_col").defaultValue()).isEqualTo(toIsoString("2020-01-02 00:00:00"));
 
         final String alter2 = "ALTER TABLE my_table MODIFY ts_col TIMESTAMP DEFAULT '2020-01-02:03:04:05';";
 
@@ -2886,7 +2964,7 @@ public class MySqlAntlrDdlParserTest {
         table = tables.forTable(new TableId(null, null, "my_table"));
 
         assertThat(table.columnWithName("ts_col").hasDefaultValue()).isEqualTo(true);
-        assertThat(table.columnWithName("ts_col").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
+        assertThat(getColumnSchema(table, "ts_col").defaultValue()).isEqualTo(toIsoString("2020-01-02 03:04:05"));
     }
 
     private String toIsoString(String timestamp) {
@@ -3043,7 +3121,7 @@ public class MySqlAntlrDdlParserTest {
         assertThat(column.isGenerated()).isEqualTo(generated);
         assertThat(column.isAutoIncremented()).isEqualTo(autoIncremented);
         assertThat(column.hasDefaultValue()).isEqualTo(hasDefaultValue);
-        assertThat(column.defaultValue()).isEqualTo(defaultValue);
+        assertThat(getColumnSchema(table, name).defaultValue()).isEqualTo(defaultValue);
     }
 
     class MysqlDdlParserWithSimpleTestListener extends MySqlAntlrDdlParser {
@@ -3053,23 +3131,29 @@ public class MySqlAntlrDdlParserTest {
         }
 
         public MysqlDdlParserWithSimpleTestListener(DdlChanges changesListener, TableFilter tableFilter) {
-            this(changesListener, false, tableFilter);
+            this(changesListener, false, false, tableFilter);
         }
 
         public MysqlDdlParserWithSimpleTestListener(DdlChanges changesListener, boolean includeViews) {
-            this(changesListener, includeViews, TableFilter.includeAll());
+            this(changesListener, includeViews, false, TableFilter.includeAll());
         }
 
-        private MysqlDdlParserWithSimpleTestListener(DdlChanges changesListener, boolean includeViews, TableFilter tableFilter) {
+        public MysqlDdlParserWithSimpleTestListener(DdlChanges changesListener, boolean includeViews, boolean includeComments) {
+            this(changesListener, includeViews, includeComments, TableFilter.includeAll());
+        }
+
+        private MysqlDdlParserWithSimpleTestListener(DdlChanges changesListener, boolean includeViews, boolean includeComments, TableFilter tableFilter) {
             super(false,
                     includeViews,
-                    new MySqlValueConverters(
-                            JdbcValueConverters.DecimalMode.DOUBLE,
-                            TemporalPrecisionMode.ADAPTIVE_TIME_MICROSECONDS,
-                            JdbcValueConverters.BigIntUnsignedMode.PRECISE,
-                            BinaryHandlingMode.BYTES),
+                    includeComments,
+                    converters,
                     tableFilter);
             this.ddlChanges = changesListener;
         }
+    }
+
+    private Schema getColumnSchema(Table table, String column) {
+        TableSchema schema = tableSchemaBuilder.create("test-1", "dummy", table, null, null, null);
+        return schema.getEnvelopeSchema().schema().field("after").schema().field(column).schema();
     }
 }

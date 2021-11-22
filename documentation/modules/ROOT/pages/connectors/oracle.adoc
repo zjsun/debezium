@@ -39,7 +39,7 @@ If you need assistance with this feature, you can engage with the https://debezi
 
 Information and procedures for using a {prodname} Oracle connector are organized as follows:
 
-  * xref:how-debezium-mysql-connectors-work[]
+  * xref:how-debezium-oracle-connectors-work[]
   * xref:descriptions-of-debezium-oracle-connector-data-change-events[]
   * xref:how-debezium-oracle-connectors-map-data-types[]
   * xref:setting-up-oracle-to-work-with-debezium[]
@@ -110,6 +110,12 @@ After the snapshot completes, the connector begins to stream event records for s
 |`schema_only`
 |The connector captures the structure of all relevant tables, performing all of the steps described in the xref:default-workflow-for-performing-an-initial-snapshot[default snapshot workflow], except that it does not create `READ` events to represent the data set at the point of the connector's start-up (Step 6).
 
+|`schema_only_recovery`
+|Set this option to restore a database history topic that is lost or corrupted.
+After a restart, the connector runs a snapshot that rebuilds the topic from the source tables.
+You can also set the property to periodically prune the database history topic that experience unexpected growth.
+Note this mode is only safe to be used when it is guaranteed that no schema changes happened since the point in time the connector was shut down before and the point in time the snapshot is taken.
+
 |===
 
 include::{partialsdir}/modules/all-connectors/ref-connector-incremental-snapshot.adoc[leveloffset=+3]
@@ -142,7 +148,7 @@ fulfillment.inventory.customers
 fulfillment.inventory.products
 ----
 
-The connector applies similar naming conventions to label its internal database history topics, xref:about-the-debezium-oracle-connector-schema-change-topic[schema change topics], and xref:oracle-transaction-metadata[transaction metadata topics].
+The connector applies similar naming conventions to label its internal database history topics, xref:oracle-schema-change-topic[schema change topics], and xref:oracle-transaction-metadata[transaction metadata topics].
 
 If the default topic name do not meet your requirements, you can configure custom topic names.
 To configure custom topic names, you specify regular expressions in the logical topic routing SMT.
@@ -428,7 +434,8 @@ The following example shows a typical transaction boundary message:
 }
 ----
 
-The connector emits transaction events to the xref:oracle-property-database-server-name[`_<database.server.name>_`]`.transaction` topic.
+Unless overridden via the xref:oracle-property-transaction-topic[`transaction.topic`] option,
+the connector emits transaction events to the xref:oracle-property-database-server-name[`_<database.server.name>_`]`.transaction` topic.
 
 //Type: concept
 //ModuleID: debezium-oracle-connector-change-data-event-enrichment
@@ -475,15 +482,60 @@ The connector drops change events that are discarded by a rollback.
 
 You can configure the buffering mechanism that the connector uses by setting the property xref:oracle-property-log-mining-buffer-type[`log.mining.buffer.type`].
 
+==== Heap
 The default buffer type is configured using `memory`.
 Under the default `memory` setting, the connector uses the heap memory of the JVM process to allocate and manage buffered event records.
 If you use the `memory` buffer setting, be sure that the amount of memory that you allocate to the Java process can accommodate long-running and large transactions in your environment.
 
 ifdef::community[]
-An additional buffer type can be configured using `infinispan`.
-You can also set the buffer type to  `infinispan` to have the connector use Infinispan in embedded-mode to cache buffered events.
-Using Infinispan as the buffer type permits the cache to be persisted to disk.
-If you use the `infinispan` option, you must also set the xref:oracle-property-log-mining-buffer-location[`log.mining.buffer.location`] property to specify the location to which the connector writes persisted cache files.
+[[oracle-event-buffering-infinispan]]
+==== Infinispan
+The {prodname} Oracle connector can also be configured to use Infinispan as its cache provider, supporting cache stores both locally with embedded mode or remotely on a server cluster.
+In order to use Infinispan, the xref:oracle-property-log-mining-buffer-type[`log.mining.buffer.type`] must be configured using either `infinispan_embedded` or `infinispan_remote`.
+
+In order to allow flexibility with Infinispan cache configurations, the connector expects a series of cache configuration properties to be supplied when using Infinispan to buffer event data.
+See the xref:oracle-connector-properties[configuration properties] in the `log.mining.buffer.infinispan.cache` namespace.
+The contents of these configuration properties depend on whether the connector is to integrate with a remote Infinispan cluster or to use the embedded engine.
+
+For example, the following illustrates what an embedded configuration would look like for the transaction cache property when using Infinispan in embedded mode:
+
+[source,xml]
+----
+<local-cache name="transactions">
+  <persistence passivation="false">
+    <file-store fetch-state="true" read-only="false" preload="true" shared="false" segmented="false" path="./data" />
+  </persistence>
+</local-cache>
+----
+
+Looking at the configuration in-depth, the cache is configured to be persistent.
+All caches should be configured this way to avoid loss of transaction events across connector restarts if a transaction is in-progress.
+Additionally, the location where the cache is kept is defined by the `path` attribute and this should be a shared location accessible all possible runtime environments.
+
+[NOTE]
+====
+When supplying XML configuration as a JSON connector property value, line breaks must be omitted or replaced with a `\n` character.
+====
+
+Another example, the following illustrates the same cache configured with an Infinispan cluster:
+
+[source,xml]
+----
+<distributed-cache name="transactions" statistics="true">
+  <encoding media-type="application/x-protostream" />
+  <persistence passivation="false">
+    <file-store fetch-state="true" read-only="false" preload="true" shared="false" segmented="false" />
+  </persistence>
+</distributed-cache>
+----
+
+Just like the embedded local-cache configuration from the previous example, this configuration is also defined to be persistent.
+All caches should be configured this way to avoid loss of transaction events across connector restarts if a transaction is in-progress.
+
+However, there are a few differences with noting.
+First, the cache is defined as a distributed cache rather than a local-cache.
+Secondly, the cache is defined to use the `application/x-protostream` encoding, which is required for all Debezium caches.
+And lastly, no `path` attribute is necessary on the file store definition since the Infinispan cluster will handle this automatically.
 
 [IMPORTANT]
 ====
@@ -493,6 +545,16 @@ The migration notes will indicate whether this is needed.
 Additionally, when removing a {prodname} Oracle connector that uses the Infinispan buffer, the persisted cache files are not removed from disk automatically.
 If the same buffer location will be used by a new connector deployment, the files should be removed manually before deploying the new connector.
 ====
+
+===== Infinispan Hotrod client integration
+
+The {prodname} Oracle connector utilizes the Hotrod client to communicate with the Infinispan cluster.
+Any connector property that is prefixed with `log.mining.buffer.infinispan.client.` will be passed directly to the Hotrod client using the `infinispan.client.` namespace, allowing for complete customization of how the client is to interact with the cluster.
+
+There is at least one required configuration property that must be supplied when using this Infinspan mode:
+
+`log.mining.buffer.infinispan.client.hotrod.server_list`::
+Specifies the list of Infinispan server hostname and port combinations, using `<hostname>:<port>` format.
 endif::community[]
 
 // Type: concept
@@ -1294,6 +1356,21 @@ A string representation of a timestamp in UTC.
 
 |===
 
+[[oracle-default-values]]
+=== Default Values
+If a default value is specified for a column in the database schema, the Oracle connector will attempt to propagate this value to the schema of the corresponding Kafka record field. Most common data types are supported, including:
+
+* Character types (`CHAR`, `NCHAR`, `VARCHAR`, `VARCHAR2`, `NVARCHAR`, `NVARCHAR2`)
+* Numeric types (`INTEGER`, `NUMERIC`, etc.)
+* Temporal types (`DATE`, `TIMESTAMP`, `INTERVAL`, etc.)
+
+If a temporal type uses a function call such as `TO_TIMESTAMP` or `TO_DATE` to represent the default value, the connector will resolve the default value by making an additional database call to evaluate the function.
+For example, if a `DATE` column is defined with the default value of `TO_DATE('2021-01-02', 'YYYY-MM-DD')`, the column's default value will be the number of days since epoch for that date or `18629` in this case.
+
+If a temporal type uses the `SYSDATE` constant to represent the default value, the connector will resolve this based on whether the column is defined as `NOT NULL` or `NULL`.
+If the column is nullable, no default value will be set; however, if the column isn't nullable then the default value will be resolved as either `0` (for `DATE` or `TIMESTAMP(n)` data types) or `1970-01-01T00:00:00Z` (for `TIMESTAMP WITH TIME ZONE` or `TIMESTAMP WITH LOCAL TIME ZONE` data types).
+The default value type will be numeric except if the column is a `TIMESTAMP WITH TIME ZONE` or `TIMESTAMP WITH LOCAL TIME ZONE` in which case its emitted as a string.
+
 // Type: assembly
 // ModuleID: setting-up-oracle-to-work-with-debezium
 //Title: Setting up Oracle to work with {prodname}
@@ -2030,6 +2107,12 @@ Specify this value to populate topics with a complete representation of the data
 `schema_only`:: The snapshot includes only the structure of captured tables.
 Specify this value if you want the connector to capture data only for changes that occur after the snapshot.
 
+`schema_only_recovery`:: This is a recovery setting for a connector that has already been capturing changes.
+When you restart the connector, this setting enables recovery of a corrupted or lost database history topic.
+You might set it periodically to "clean up" a database history topic that has been growing unexpectedly.
+Database history topics require infinite retention.
+Note this mode is only safe to be used when it is guaranteed that no schema changes happened since the point in time the connector was shut down before and the point in time the snapshot is taken.
+
 After the snapshot is complete, the connector continues to read change events from the database's redo logs.
 
 |[[oracle-property-snapshot-locking-mode]]<<oracle-property-snapshot-locking-mode, `+snapshot.locking.mode+`>>
@@ -2083,6 +2166,10 @@ In the resulting snapshot, the connector includes only the records for which `de
 |An optional, comma-separated list of regular expressions that match names of schemas for which you *want* to capture changes. Any schema name not included in `schema.include.list` is excluded from having its changes captured. By default, all non-system schemas have their changes captured. Do not also set the `schema.exclude.list` property.
 In environments that use the LogMiner implementation, you must use POSIX regular expressions only.
 
+|[[oracle-property-include-schema-comments]]<<oracle-property-include-schema-comments, `+include.schema.comments+`>>
+|`false`
+|Boolean value that specifies whether the connector should parse and publish table and column comments on metadata objects. Enabling this option will bring the implications on memory usage. The number and size of logical schema objects is what largely impacts how much memory is consumed by the Debezium connectors, and adding potentially large string data to each of them can potentially be quite expensive.
+
 |[[oracle-property-schema-exclude-list]]<<oracle-property-schema-exclude-list, `+schema.exclude.list+`>>
 |No default
 |An optional, comma-separated list of regular expressions that match names of schemas for which you *do not* want to capture changes. Any schema whose name is not included in `schema.exclude.list` has its changes captured, with the exception of system schemas. Do not also set the `schema.include.list` property.
@@ -2131,8 +2218,9 @@ Fully-qualified column names use the following format: +
 The primary key column is always included in an event's key, even if you use this property to explicitly exclude its value.
 If you include this property in the configuration, do not set the `column.include.list` property.
 
-|[[oracle-property-column-mask-hash]]<<oracle-property-column-mask-hash, `column.mask.hash._<hashAlgorithm>_.with.salt._<salt>_`>>
-|No default
+|[[oracle-property-column-mask-hash]]<<oracle-property-column-mask-hash, `column.mask.hash._hashAlgorithm_.with.salt._salt_`>>;
+[[oracle-property-column-mask-hash-v2]]<<oracle-property-column-mask-hash-v2, `column.mask.hash.v2._hashAlgorithm_.with.salt._salt_`>>
+|_n/a_
 |An optional, comma-separated list of regular expressions that match the fully-qualified names of character-based columns.
 Fully-qualified names for columns are of the form `_<schemaName>_._<tableName>_._<columnName>_`. +
  +
@@ -2151,7 +2239,9 @@ column.mask.hash.SHA-256.with.salt.CzQMA0cB5K = inventory.orders.customerName, i
 If necessary, the pseudonym is automatically shortened to the length of the column.
 The connector configuration can include multiple properties that specify different hash algorithms and salts. +
  +
-Depending on the _hashAlgorithm_ used, the _salt_ selected, and the actual data set, the resulting data set might not be completely masked.
+Depending on the _hashAlgorithm_ used, the _salt_ selected, and the actual data set, the resulting data set might not be completely masked. +
+ +
+Hashing strategy version 2 should be used to ensure fidelity if the value is being hashed in different places or systems.
 
 |[[oracle-property-decimal-handling-mode]]<<oracle-property-decimal-handling-mode, `+decimal.handling.mode+`>>
 |`precise`
@@ -2300,6 +2390,10 @@ For more information, see {link-prefix}:{link-avro-serialization}#avro-naming[Av
 
 See {link-prefix}:{link-oracle-connector}#oracle-transaction-metadata[Transaction Metadata] for additional details.
 
+|[[oracle-property-transaction-topic]]<<oracle-property-transaction-topic, `transaction.topic`>>
+|`${database.server.name}.transaction`
+|Controls the name of the topic to which the connector sends transaction metadata messages. The placeholder `${database.server.name}` can be used for referring to the connector's logical name; defaults to `${database.server.name}.transaction`, for example `dbserver1.transaction`.
+
 |[[oracle-property-log-mining-strategy]]<<oracle-property-log-mining-strategy, `+log.mining.strategy+`>>
 |`redo_log_catalog`
 |Specifies the mining strategy that controls how Oracle LogMiner builds and uses a given data dictionary for resolving table and column ids to names. +
@@ -2329,11 +2423,24 @@ Since the buffer state is persisted across restarts, the buffer does not need to
 The infinispan option requires that you specify a cache file directory.
 Use the `log.mining.buffer.location` property to define the location for storing cache files.
 
-|[[oracle-property-log-mining-buffer-location]]<<oracle-property-log-mining-buffer-location, `+log.mining.buffer.location+`>>
+|[[oracle-property-log-mining-buffer-infinispan-cache-transactions]]<<oracle-property-log-mining-buffer-infinispan-cache-transactions, `+log.mining.buffer.infinispan.cache.transactions+`>>
 |No default
-|Specifies the location of the directory that the connector uses to read and write the buffer cache.
-Specify a directory that every node in the Kafka cluster can access and that is unique for the connector deployment.
-endif::community[]
+|The XML configuration for the Infinispan transaction cache.
+See xref:oracle-event-buffering-infinispan[Infinispan event buffering] for more details.
+
+|[[oracle-property-log-mining-buffer-infinispan-cache-events]]<<oracle-property-log-mining-buffer-infinispan-cache-events, `+log.mining.buffer.infinispan.cache.events+`>>
+|No default
+|The XML configuration for the Infinispan events cache.
+See xref:oracle-event-buffering-infinispan[Infinispan event buffering] for more details.
+
+|[[oracle-property-log-mining-buffer-infinispan-cache-processed-transactions]]<<oracle-property-log-mining-buffer-infinispan-cache-processed-transactions, `+log.mining.buffer.infinispan.cache.processed_transactions+`>>
+|No default
+|The XML configuration for the Infinispan processed transactions cache.
+See xref:oracle-event-buffering-infinispan[Infinispan event buffering] for more details.
+
+|[[oracle-property-log-mining-buffer-infinispan-cache-schema-changes]]<<oracle-property-log-mining-buffer-infinispan-cache-schema-changes, `+log.mining.buffer.infinispan.cache.schema_changes+`>>
+|No default
+|The XML configuration for the Infinispan schema changes cache.
 
 |[[oracle-property-log-mining-buffer-drop-on-stop]]<<oracle-property-log-mining-buffer-drop-on-stop, `+log.mining.buffer.drop.on.stop+`>>
 |`false`
@@ -2343,6 +2450,7 @@ This setting only impacts buffer implementations that persist state across resta
 The default behavior is that the buffer state is always retained between restarts. +
  +
 Set to `true` only in testing or development environments.
+endif::community[]
 
 |[[oracle-property-log-mining-batch-size-min]]<<oracle-property-log-mining-batch-size-min, `+log.mining.batch.size.min+`>>
 |`1000`
@@ -2844,7 +2952,7 @@ Instead, it contains the complete new schema structure.
 
 |===
 
-After the `schema-changes` signal is inserted, the connector must be restarted with an altered configuration that includes specifying the  <<oracle-property-database-history-skip-unparseable-ddl, `+database.history.skip.unparseable.ddl+`>> option as `true`.
+After the `schema-changes` signal is inserted, the connector must be restarted with an altered configuration that includes specifying the  <<{context}-property-database-history-skip-unparseable-ddl, `+database.history.skip.unparseable.ddl+`>> option as `true`.
 After the connector's commit SCN advances beyond the DDL change, to prevent unparseable DDL statements from being skipped unexpectedly, return the connector configuration to its previous state.
 
 .Example of a logging record
@@ -3165,12 +3273,13 @@ This error means that the connector has attempted to execute an operation that m
 To resolve this, the IOT name used in the SQL operation should be replaced with the parent index-organized table name.
 To determine the parent index-organized table name, use the following SQL:
 
-```
+[source,sql]
+----
 SELECT IOT_NAME
   FROM DBA_TABLES
  WHERE OWNER='<tablespace-owner>'
    AND TABLE_NAME='<iot-table-name-that-failed>'
-```
+----
 
 The connector's `table.include.list` or `table.exclude.list` configuration options should then be adjusted to explicitly include or exclude the appropriate tables to avoid the connector from attempting to capture changes from the child index-organized table.
 

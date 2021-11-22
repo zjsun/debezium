@@ -8,6 +8,7 @@ package io.debezium.pipeline.source;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.slf4j.Logger;
@@ -92,13 +93,14 @@ public abstract class AbstractSnapshotChangeEventSource<P extends Partition, O e
     }
 
     protected <T extends DataCollectionId> Stream<T> determineDataCollectionsToBeSnapshotted(final Collection<T> allDataCollections) {
-        final Set<String> snapshotAllowedDataCollections = connectorConfig.getDataCollectionsToBeSnapshotted();
+        final Set<Pattern> snapshotAllowedDataCollections = connectorConfig.getDataCollectionsToBeSnapshotted();
         if (snapshotAllowedDataCollections.size() == 0) {
             return allDataCollections.stream();
         }
         else {
             return allDataCollections.stream()
-                    .filter(dataCollectionId -> snapshotAllowedDataCollections.stream().anyMatch(s -> dataCollectionId.identifier().matches(s)));
+                    .filter(dataCollectionId -> snapshotAllowedDataCollections.stream()
+                            .anyMatch(s -> s.matcher(dataCollectionId.identifier()).matches()));
         }
     }
 

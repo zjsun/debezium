@@ -30,6 +30,7 @@ import io.debezium.DebeziumException;
 import io.debezium.config.Configuration;
 import io.debezium.connector.oracle.OracleConnection;
 import io.debezium.connector.oracle.OracleConnectorConfig;
+import io.debezium.connector.oracle.OracleConnectorConfig.LogMiningBufferType;
 import io.debezium.connector.oracle.OracleDatabaseSchema;
 import io.debezium.connector.oracle.OracleOffsetContext;
 import io.debezium.connector.oracle.OraclePartition;
@@ -39,8 +40,6 @@ import io.debezium.connector.oracle.logminer.logwriter.CommitLogWriterFlushStrat
 import io.debezium.connector.oracle.logminer.logwriter.LogWriterFlushStrategy;
 import io.debezium.connector.oracle.logminer.logwriter.RacCommitLogWriterFlushStrategy;
 import io.debezium.connector.oracle.logminer.processor.LogMinerEventProcessor;
-import io.debezium.connector.oracle.logminer.processor.infinispan.InfinispanLogMinerEventProcessor;
-import io.debezium.connector.oracle.logminer.processor.memory.MemoryLogMinerEventProcessor;
 import io.debezium.jdbc.JdbcConfiguration;
 import io.debezium.pipeline.ErrorHandler;
 import io.debezium.pipeline.EventDispatcher;
@@ -206,11 +205,8 @@ public class LogMinerStreamingChangeEventSource implements StreamingChangeEventS
     private LogMinerEventProcessor createProcessor(ChangeEventSourceContext context,
                                                    OraclePartition partition,
                                                    OracleOffsetContext offsetContext) {
-        if (OracleConnectorConfig.LogMiningBufferType.INFINISPAN.equals(connectorConfig.getLogMiningBufferType())) {
-            return new InfinispanLogMinerEventProcessor(context, connectorConfig, jdbcConnection, dispatcher,
-                    partition, offsetContext, schema, streamingMetrics);
-        }
-        return new MemoryLogMinerEventProcessor(context, connectorConfig, jdbcConnection, dispatcher, partition, offsetContext, schema, streamingMetrics);
+        final LogMiningBufferType bufferType = connectorConfig.getLogMiningBufferType();
+        return bufferType.createProcessor(context, connectorConfig, jdbcConnection, dispatcher, partition, offsetContext, schema, streamingMetrics);
     }
 
     /**

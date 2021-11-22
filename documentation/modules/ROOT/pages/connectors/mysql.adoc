@@ -166,7 +166,7 @@ The payload of a schema change event message includes the following elements:
 
 `ddl`:: Provides the SQL `CREATE`, `ALTER`, or `DROP` statement that results in the schema change.
 `databaseName`:: The name of the database to which the DDL statements are applied.
-The value of `databaseName` serves as the message key. 
+The value of `databaseName` serves as the message key.
 `pos`:: The position in the binlog where the statements appear.
 `tableChanges`::  A structured representation of the entire table schema after the schema change.
 The `tableChanges` field contains an array that includes entries for each column of the table.
@@ -576,7 +576,7 @@ _schemaName_:: The name of the schema in which the operation occurred.
 
 _tableName_:: The name of the table in which the operation occurred.
 
-The connector applies similar naming conventions to label its internal database history topics, xref:about-the-debezium-mysql-connector-schema-change-topic[schema change topics], and xref:mysql-transaction-metadata[transaction metadata topics].
+The connector applies similar naming conventions to label its internal database history topics, xref:mysql-schema-change-topic[schema change topics], and xref:mysql-transaction-metadata[transaction metadata topics].
 
 If the default topic name do not meet your requirements, you can configure custom topic names.
 To configure custom topic names, you specify regular expressions in the logical topic routing SMT.
@@ -631,7 +631,8 @@ that indicates the number of events that the connector emits for changes that or
 }
 ----
 
-The connector emits transaction events to the xref:mysql-property-database-server-name[`_<database.server.name>_`]`.transaction` topic.
+Unless overridden via the xref:mysql-property-transaction-topic[`transaction.topic`] option,
+the connector emits transaction events to the xref:mysql-property-database-server-name[`_<database.server.name>_`]`.transaction` topic.
 
 .Change data event enrichment
 
@@ -2381,7 +2382,8 @@ Do not also specify the `table.include.list` connector configuration property.
 |_n/a_
 |An optional, comma-separated list of regular expressions that match the fully-qualified names of character-based columns whose values should be replaced in the change event message values with a field value consisting of the specified number of asterisk (`*`) characters. You can configure multiple properties with different lengths in a single configuration. Each length must be a positive integer or zero. Fully-qualified names for columns are of the form _databaseName_._tableName_._columnName_.
 
-|[[mysql-property-column-mask-hash]]<<mysql-property-column-mask-hash, `column.mask.hash._hashAlgorithm_.with.salt._salt_`>>
+|[[mysql-property-column-mask-hash]]<<mysql-property-column-mask-hash, `column.mask.hash._hashAlgorithm_.with.salt._salt_`>>;
+[[mysql-property-column-mask-hash-v2]]<<mysql-property-column-mask-hash-v2, `column.mask.hash.v2._hashAlgorithm_.with.salt._salt_`>>
 |_n/a_
 a|An optional, comma-separated list of regular expressions that match the fully-qualified names of character-based columns.
 Fully-qualified names for columns are of the form `_<databaseName>_._<tableName>_._<columnName>_`.
@@ -2400,7 +2402,9 @@ column.mask.hash.SHA-256.with.salt.CzQMA0cB5K = inventory.orders.customerName, i
 If necessary, the pseudonym is automatically shortened to the length of the column.
 The connector configuration can include multiple properties that specify different hash algorithms and salts. +
  +
-Depending on the _hashAlgorithm_ used, the _salt_ selected, and the actual data set, the resulting data set might not be completely masked.
+Depending on the _hashAlgorithm_ used, the _salt_ selected, and the actual data set, the resulting data set might not be completely masked. +
+ +
+Hashing strategy version 2 should be used to ensure fidelity if the value is being hashed in different places or systems.
 
 |[[mysql-property-column-propagate-source-type]]<<mysql-property-column-propagate-source-type, `+column.propagate.source.type+`>>
 |_n/a_
@@ -2469,6 +2473,10 @@ endif::community[]
 |[[mysql-property-include-schema-changes]]<<mysql-property-include-schema-changes, `+include.schema.changes+`>>
 |`true`
 |Boolean value that specifies whether the connector should publish changes in the database schema to a Kafka topic with the same name as the database server ID. Each schema change is recorded by using a key that contains the database name and whose value includes the DDL statement(s). This is independent of how the connector internally records database history.
+
+|[[mysql-property-include-schema-comments]]<<mysql-property-include-schema-comments, `+include.schema.comments+`>>
+|`false`
+|Boolean value that specifies whether the connector should parse and publish table and column comments on metadata objects. Enabling this option will bring the implications on memory usage. The number and size of logical schema objects is what largely impacts how much memory is consumed by the Debezium connectors, and adding potentially large string data to each of them can potentially be quite expensive.
 
 |[[mysql-property-include-query]]<<mysql-property-include-query, `+include.query+`>>
 |`false`
@@ -2712,6 +2720,14 @@ _heartbeat.topics.prefix_._server.name_ +
  +
 For example, if the database server name is `fulfillment`, the default topic name is `__debezium-heartbeat.fulfillment`.
 
+|[[mysql-property-heartbeat-action-query]]<<mysql-property-heartbeat-action-query, `+heartbeat.action.query+`>>
+|No default
+|Specifies a query that the connector executes on the source database when the connector sends a heartbeat message. +
+ +
+For example, this can be used to periodically capture the state of the executed GTID set in the source database. +
+ +
+`INSERT INTO gtid_history_table (select * from mysql.gtid_executed)`
+
 |[[mysql-property-database-initial-statements]]<<mysql-property-database-initial-statements, `+database.initial.statements+`>>
 |No default
 |A semicolon separated list of SQL statements to be executed when a JDBC connection, not the connection that is reading the transaction log, to the database is established.
@@ -2759,6 +2775,12 @@ endif::community[]
 | Fully-qualified name of the data collection that is used to send {link-prefix}:{link-signalling}[signals] to the connector.
 The name format is _database-name.table-name_.
 
+|[[mysql-property-incremental-snapshot-allow-schema-changes]]<<mysql-property-incremental-snapshot-allow-schema-changes, `+incremental.snapshot.allow.schema.changes+`>>
+|`false`
+| Allow schema changes during an incremental snapshot. When enabled the connector will detect schema change during an incremental snapshot and re-select a current chunk to avoid locking DDLs. +
+ +
+Note that changes to a primary key are not supported and can cause incorrect results if performed during an incremental snapshot. Another limitation is that if a schema change affects only columns' default values, then the change won't be detected until the DDL is processed from the binlog stream. This doesn't affect the snapshot events' values, but the schema of snapshot events may have outdated defaults.
+
 |[[mysql-property-read-only]]<<mysql-property-read-only, `+read.only+`>>
 |`false`
 |Switch to alternative incremental snapshot watermarks implementation to avoid writes to signal data collection
@@ -2767,6 +2789,9 @@ The name format is _database-name.table-name_.
 |`false`
 |Determines whether the connector generates events with transaction boundaries and enriches change event envelopes with transaction metadata. Specify `true` if you want the connector to do this. See {link-prefix}:{link-mysql-connector}#mysql-transaction-metadata[Transaction metadata] for details.
 
+|[[mysql-property-transaction-topic]]<<mysql-property-transaction-topic, `transaction.topic`>>
+|`${database.server.name}.transaction`
+|Controls the name of the topic to which the connector sends transaction metadata messages. The placeholder `${database.server.name}` can be used for referring to the connector's logical name; defaults to `${database.server.name}.transaction`, for example `dbserver1.transaction`.
 |===
 
 [id="debezium-{context}-connector-database-history-configuration-properties"]

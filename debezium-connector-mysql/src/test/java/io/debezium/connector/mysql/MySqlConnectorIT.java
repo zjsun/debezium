@@ -1145,7 +1145,7 @@ public class MySqlConnectorIT extends AbstractConnectorTest {
                     while (rs.next()) {
                         final String dbName = rs.getString(1);
                         if (!Filters.isBuiltInDatabase(dbName) && !dbName.equals(DATABASE.getDatabaseName())) {
-                            connection.execute("DROP DATABASE IF EXISTS " + dbName);
+                            connection.execute("DROP DATABASE IF EXISTS `" + dbName + "`");
                         }
                     }
                 });
@@ -2477,5 +2477,23 @@ public class MySqlConnectorIT extends AbstractConnectorTest {
         assertThat(changeEvents.size()).isEqualTo(3);
 
         stopConnector();
+    }
+
+    @Test
+    @FixFor("DBZ-1344")
+    public void testNoEmptySchemaLogWarningWithSnapshotNever() throws Exception {
+        final LogInterceptor logInterceptor = new LogInterceptor();
+
+        config = DATABASE.defaultConfig()
+                .with(MySqlConnectorConfig.SNAPSHOT_MODE, SnapshotMode.NEVER)
+                .with(MySqlConnectorConfig.DATABASE_INCLUDE_LIST, "my_database")
+                .build();
+
+        start(MySqlConnector.class, config);
+
+        consumeRecordsByTopic(12);
+        waitForAvailableRecords(100, TimeUnit.MILLISECONDS);
+
+        stopConnector(value -> assertThat(logInterceptor.containsWarnMessage(DatabaseSchema.NO_CAPTURED_DATA_COLLECTIONS_WARNING)).isFalse());
     }
 }

@@ -48,7 +48,7 @@ node('Slave') {
             }
         }
         stage ('Build product') {
-            sh "java -jar ./bacon.jar pig run ${TEMPORARY_BUILD ? '-t' : ''} -e product-version=$PRODUCT_VERSION -e product-version-release=$PRODUCT_VERSION_RELEASE -e debezium-version=$DEBEZIUM_VERSION -e milestone=$PRODUCT_MILESTONE -v debezium-bacon"
+            sh "java -jar ./bacon.jar pig run ${TEMPORARY_BUILD == 'true' ? '-t' : ''} -e product-version=$PRODUCT_VERSION -e product-version-release=$PRODUCT_VERSION_RELEASE -e debezium-version=$DEBEZIUM_VERSION -e milestone=$PRODUCT_MILESTONE -v debezium-bacon"
         }
         stage('Extract connector packages') {
             dir (PACKAGES_DIR) {
@@ -78,6 +78,6 @@ node('Slave') {
             }
         }
     } finally {
-        mail to: 'jpechane@redhat.com', subject: "${JOB_NAME} run #${BUILD_NUMBER} finished", body: "Run ${BUILD_URL} finished with result: ${currentBuild.currentResult}"
+        mail to: MAIL_TO, subject: "${JOB_NAME} run #${BUILD_NUMBER} finished", body: "Run ${BUILD_URL} finished with result: ${currentBuild.currentResult}"
     }
 }

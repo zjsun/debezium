@@ -3,40 +3,30 @@ name: Build SQL Server Connector
 on:
   push:
     branches:
-      - master
+      - main
       - 1.*
     paths:
       - 'support/checkstyle/**'
-      - 'support/ide-configs/**'
-      - 'support/revapi/**'
       - 'debezium-api/**'
       - 'debezium-assembly-descriptors/**'
       - 'debezium-core/**'
       - 'debezium-embedded/**'
       - 'debezium-connector-sqlserver/**'
-      - 'debezium-microbenchmark/**'
-      - 'debezium-e2e-benchmark/**'
-      - 'debezium-scripting/**'
       - 'debezium-parent/pom.xml'
       - 'debezium-bom/pom.xml'
       - 'pom.xml'
       - '.github/workflows/sqlserver-workflow.yml'
   pull_request:
     branches:
-      - master
+      - main
       - 1.*
     paths:
       - 'support/checkstyle/**'
-      - 'support/ide-configs/**'
-      - 'support/revapi/**'
       - 'debezium-api/**'
       - 'debezium-assembly-descriptors/**'
       - 'debezium-core/**'
       - 'debezium-embedded/**'
       - 'debezium-connector-sqlserver/**'
-      - 'debezium-microbenchmark/**'
-      - 'debezium-e2e-benchmark/**'
-      - 'debezium-scripting/**'
       - 'debezium-parent/pom.xml'
       - 'debezium-bom/pom.xml'
       - 'pom.xml'
@@ -47,6 +37,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
+      - name: Setup java 17
+        uses: actions/setup-java@v2
+        with:
+          distribution: 'temurin'
+          java-version: 17
       - name: Cache local Maven repository
         uses: actions/cache@v2
         with:

@@ -3,7 +3,7 @@ name: Build Connector Vitess
 on:
   push:
     branches:
-      - master
+      - main
       - 1.*
     paths:
       - 'debezium-core/**'
@@ -14,7 +14,7 @@ on:
       - '.github/workflows/vitess-workflow.yml'
   pull_request:
     branches:
-      - master
+      - main
       - 1.*
     paths:
       - 'debezium-core/**'
@@ -38,6 +38,11 @@ jobs:
         with:
           repository: debezium/debezium-connector-vitess
           path: vitess
+      - name: Setup java 17
+        uses: actions/setup-java@v2
+        with:
+          distribution: 'temurin'
+          java-version: 17
       - name: Cache Maven Packages
         uses: actions/cache@v2
         with:
@@ -45,6 +50,6 @@ jobs:
           key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
           restore-keys: ${{ runner.os }}-m2
       - name: Build Debezium Core
-        run: mvn clean install -f core/pom.xml -DskipTests -DskipITs -Dformat.formatter.goal=validate -Dformat.imports.goal=check -Dmaven.wagon.http.pool=false -Dmaven.wagon.httpconnectionManager.ttlSeconds=120
+        run: mvn clean install -f core/pom.xml  -pl debezium-bom,debezium-core -am -DskipTests -DskipITs -Dformat.formatter.goal=validate -Dformat.imports.goal=check -Dmaven.wagon.http.pool=false -Dmaven.wagon.httpconnectionManager.ttlSeconds=120
       - name: Build Debezium Connector Vitess
         run: mvn clean install -f vitess/pom.xml -Passembly -Dformat.formatter.goal=validate -Dformat.imports.goal=check -Dmaven.wagon.http.pool=false -Dmaven.wagon.httpconnectionManager.ttlSeconds=120

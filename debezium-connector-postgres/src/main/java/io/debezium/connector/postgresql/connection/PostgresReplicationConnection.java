@@ -355,7 +355,7 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
 
         try (Statement stmt = pgConnection().createStatement()) {
             String createCommand = String.format(
-                    "CREATE_REPLICATION_SLOT %s %s LOGICAL %s",
+                    "CREATE_REPLICATION_SLOT \"%s\" %s LOGICAL %s",
                     slotName,
                     tempPart,
                     plugin.getPostgresPluginName());
@@ -570,7 +570,7 @@ public class PostgresReplicationConnection extends JdbcConnection implements Rep
                 .getReplicationAPI()
                 .replicationStream()
                 .logical()
-                .withSlotName(slotName)
+                .withSlotName("\"" + slotName + "\"")
                 .withStartPosition(lsn.asLogSequenceNumber())
                 .withSlotOptions(streamParams);
         streamBuilder = configurator.apply(streamBuilder);

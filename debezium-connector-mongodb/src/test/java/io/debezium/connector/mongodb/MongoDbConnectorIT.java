@@ -273,12 +273,12 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
 
     @Test
     public void shouldConsumeAllEventsFromDatabase() throws InterruptedException, IOException {
-
         // Use the DB configuration to define the connector's configuration ...
         config = TestHelper.getConfiguration().edit()
                 .with(MongoDbConnectorConfig.POLL_INTERVAL_MS, 10)
                 .with(MongoDbConnectorConfig.COLLECTION_INCLUDE_LIST, "dbit.*")
                 .with(MongoDbConnectorConfig.LOGICAL_NAME, "mongo")
+                // .with(MongoDbConnectorConfig.CAPTURE_MODE, CaptureMode.OPLOG)
                 .build();
 
         // Set up the replication context for connections ...
@@ -875,7 +875,9 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
             validate(record);
             verifyNotFromInitialSync(record);
             verifyCreateOperation(record);
-            verifyFromTransaction(record, txOrder.incrementAndGet());
+            if (TestHelper.isOplogCaptureMode()) {
+                verifyFromTransaction(record, txOrder.incrementAndGet());
+            }
         });
 
         // ---------------------------------------------------------------------------------------------------------------
@@ -903,7 +905,9 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
             validate(record);
             verifyNotFromInitialSync(record);
             verifyCreateOperation(record);
-            verifyFromTransaction(record, txOrder.incrementAndGet());
+            if (TestHelper.isOplogCaptureMode()) {
+                verifyFromTransaction(record, txOrder.incrementAndGet());
+            }
         });
     }
 
@@ -933,10 +937,12 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
         storeDocuments("dbit", "restaurants", "restaurants1.json");
 
         // Start the connector and terminate it when third event from transaction arrives
-        start(MongoDbConnector.class, config, record -> {
+        startAndConsumeTillEnd(MongoDbConnector.class, config, record -> {
             final Struct struct = (Struct) record.value();
             final Long txOrder = struct.getStruct("source").getInt64("tord");
-            return txOrder != null && txOrder.equals(3L);
+            final String name = struct.getString("after");
+            return (txOrder != null && txOrder.equals(3L))
+                    || (name != null && "Taste The Tropics Ice Cream".contains(name));
         });
 
         // ---------------------------------------------------------------------------------------------------------------
@@ -974,7 +980,9 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
             validate(record);
             verifyNotFromInitialSync(record);
             verifyCreateOperation(record);
-            verifyFromTransaction(record, txOrder.incrementAndGet());
+            if (TestHelper.isOplogCaptureMode()) {
+                verifyFromTransaction(record, txOrder.incrementAndGet());
+            }
         });
 
         // ---------------------------------------------------------------------------------------------------------------
@@ -993,9 +1001,10 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
         // ---------------------------------------------------------------------------------------------------------------
         start(MongoDbConnector.class, config);
 
-        // Wait until we can consume 2 (incomplete transaction) + 5 (new documents added)
-        SourceRecords records3 = consumeRecordsByTopic(7);
-        assertThat(records3.recordsForTopic("mongo.dbit.restaurants").size()).isEqualTo(7);
+        // Wait until we can consume 2 (for incomplete transaction) + 5 (new documents added)
+        final int recCount = 7;
+        SourceRecords records3 = consumeRecordsByTopic(recCount);
+        assertThat(records3.recordsForTopic("mongo.dbit.restaurants").size()).isEqualTo(recCount);
         assertThat(records3.topics().size()).isEqualTo(1);
         final List<Long> expectedTxOrd = Collect.arrayListOf(3L, 4L, 1L, 2L, 3L, 4L, 5L);
         records3.forEach(record -> {
@@ -1003,7 +1012,9 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
             validate(record);
             verifyNotFromInitialSync(record);
             verifyCreateOperation(record);
-            verifyFromTransaction(record, expectedTxOrd.remove(0));
+            if (TestHelper.isOplogCaptureMode()) {
+                verifyFromTransaction(record, expectedTxOrd.remove(0));
+            }
         });
     }
 
@@ -1299,7 +1310,6 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
     @Test
     @FixFor("DBZ-1198")
     public void shouldEmitHeartbeatMessages() throws InterruptedException, IOException {
-        Testing.Print.enable();
         // Use the DB configuration to define the connector's configuration ...
         config = TestHelper.getConfiguration().edit()
                 .with(MongoDbConnectorConfig.POLL_INTERVAL_MS, 10)
@@ -1331,7 +1341,7 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
         SourceRecords records = consumeRecordsByTopic(1);
         assertThat(records.allRecordsInOrder()).hasSize(1);
         assertThat(records.recordsForTopic("mongo.dbit.mhb")).hasSize(1);
-
+        Thread.sleep(1000);
         primary().execute("insert-monitored", mongo -> {
             MongoDatabase db1 = mongo.getDatabase("dbit");
             MongoCollection<Document> coll = db1.getCollection("mhb");
@@ -1361,8 +1371,10 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
             coll.insertOne(doc, insertOptions);
         });
 
-        // Heartbeat created by non-monitored collection event and heartbeat created by MongoDB heartbeat event
-        records = consumeRecordsByTopic(2);
+        // Heartbeat created by non-monitored collection event and
+        // heartbeat created by MongoDB heartbeat event (oplog only)
+        final int heartbeatRecordCount = TestHelper.isOplogCaptureMode() ? 2 : 1;
+        records = consumeRecordsByTopic(heartbeatRecordCount);
         final List<SourceRecord> heartbeatRecords = records.recordsForTopic("__debezium-heartbeat.mongo");
         assertThat(heartbeatRecords.size()).isGreaterThanOrEqualTo(1);
         heartbeatRecords.forEach(record -> {
@@ -1498,12 +1510,22 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
         assertThat(key.schema()).isSameAs(deleteRecord.keySchema());
         assertThat(key.get("id")).isEqualTo(formatObjectId(objId));
 
-        Document patchObj = Document.parse(value.getString(MongoDbFieldName.PATCH));
-        patchObj.remove("$v");
+        if (TestHelper.isOplogCaptureMode()) {
+            Document patchObj = Document.parse(value.getString(MongoDbFieldName.PATCH));
+            patchObj.remove("$v");
+            assertThat(patchObj.toJson(COMPACT_JSON_SETTINGS)).isEqualTo(updateObj.toJson(COMPACT_JSON_SETTINGS));
+            assertThat(value.getString(Envelope.FieldName.AFTER)).isNull();
+        }
+        else {
+            TestHelper.assertChangeStreamUpdate(
+                    objId,
+                    value,
+                    "{\"_id\": {\"$oid\": \"<OID>\"},\"name\": \"Sally\"}",
+                    null,
+                    "{\"name\": \"Sally\"}");
+        }
 
         assertThat(value.schema()).isSameAs(deleteRecord.valueSchema());
-        assertThat(value.getString(Envelope.FieldName.AFTER)).isNull();
-        assertThat(patchObj.toJson(COMPACT_JSON_SETTINGS)).isEqualTo(updateObj.toJson(COMPACT_JSON_SETTINGS));
         assertThat(value.getString(Envelope.FieldName.OPERATION)).isEqualTo(Operation.UPDATE.code());
         assertThat(value.getInt64(Envelope.FieldName.TIMESTAMP)).isGreaterThanOrEqualTo(timestamp.toEpochMilli());
 
@@ -1993,12 +2015,22 @@ public class MongoDbConnectorIT extends AbstractConnectorTest {
         assertThat(key.schema()).isSameAs(deleteRecord.keySchema());
         assertThat(key.get("id")).isEqualTo(formatObjectId(objId));
 
-        Document patchObj = Document.parse(value.getString(MongoDbFieldName.PATCH));
-        patchObj.remove("$v");
+        if (TestHelper.isOplogCaptureMode()) {
+            Document patchObj = Document.parse(value.getString(MongoDbFieldName.PATCH));
+            patchObj.remove("$v");
+            assertThat(patchObj.toJson(COMPACT_JSON_SETTINGS)).isEqualTo(updateObj.toJson(COMPACT_JSON_SETTINGS));
+            assertThat(value.getString(Envelope.FieldName.AFTER)).isNull();
+        }
+        else {
+            TestHelper.assertChangeStreamUpdate(
+                    objId,
+                    value,
+                    "{\"_id\": {\"$oid\": \"<OID>\"},\"name\": \"Sally\"}",
+                    null,
+                    "{\"name\": \"Sally\"}");
+        }
 
         assertThat(value.schema()).isSameAs(deleteRecord.valueSchema());
-        assertThat(value.getString(Envelope.FieldName.AFTER)).isNull();
-        assertThat(patchObj.toJson(COMPACT_JSON_SETTINGS)).isEqualTo(updateObj.toJson(COMPACT_JSON_SETTINGS));
         assertThat(value.getString(Envelope.FieldName.OPERATION)).isEqualTo(Operation.UPDATE.code());
         assertThat(value.getInt64(Envelope.FieldName.TIMESTAMP)).isGreaterThanOrEqualTo(timestamp.toEpochMilli());
     }

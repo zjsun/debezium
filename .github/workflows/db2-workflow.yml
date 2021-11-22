@@ -3,7 +3,7 @@ name: Build Connector Db2
 on:
   push:
     branches:
-      - master
+      - main
       - 1.*
     paths:
       - 'debezium-core/**'
@@ -14,7 +14,7 @@ on:
       - '.github/workflows/db2-workflow.yml'
   pull_request:
     branches:
-      - master
+      - main
       - 1.*
     paths:
       - 'debezium-core/**'
@@ -38,6 +38,11 @@ jobs:
         with:
           repository: debezium/debezium-connector-db2
           path: db2
+      - name: Setup java 17
+        uses: actions/setup-java@v2
+        with:
+          distribution: 'temurin'
+          java-version: 17
       - name: Cache Maven Packages
         uses: actions/cache@v2
         with:
@@ -45,6 +50,6 @@ jobs:
           key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
           restore-keys: ${{ runner.os }}-m2
       - name: Build Debezium Core
-        run: mvn clean install -f core/pom.xml -DskipTests -DskipITs -Dformat.formatter.goal=validate -Dformat.imports.goal=check -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false -Dmaven.wagon.httpconnectionManager.ttlSeconds=120
+        run: mvn clean install -f core/pom.xml -pl debezium-core -am -DskipTests -DskipITs -Dformat.formatter.goal=validate -Dformat.imports.goal=check -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false -Dmaven.wagon.httpconnectionManager.ttlSeconds=120
       - name: Build Debezium Connector Db2
         run: mvn clean install -f db2/pom.xml -Passembly -Dformat.formatter.goal=validate -Dformat.imports.goal=check -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false -Dmaven.wagon.httpconnectionManager.ttlSeconds=120

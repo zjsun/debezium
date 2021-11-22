@@ -89,7 +89,9 @@ pipeline {
                     '''
                     sh '''
                     set -x
-                    sed -i "s/namespace: apicurio-registry-operator-namespace /namespace: ${OCP_PROJECT_REGISTRY}/" ${APIC_RESOURCES}/install.yaml
+                    cat ${APIC_RESOURCES}/install.yaml | grep "namespace: apicurio-registry-operator-namespace" -A5 -B5
+                    sed -i "s/namespace: apicurio-registry-operator-namespace/namespace: ${OCP_PROJECT_REGISTRY}/" ${APIC_RESOURCES}/install.yaml
+                    cat ${APIC_RESOURCES}/install.yaml | grep "namespace: ${OCP_PROJECT_REGISTRY}" -A5 -B5
                     oc delete -f ${APIC_RESOURCES} -n ${OCP_PROJECT_REGISTRY} --ignore-not-found
                     oc create -f ${APIC_RESOURCES} -n ${OCP_PROJECT_REGISTRY}
                     '''
@@ -108,7 +110,7 @@ pipeline {
                     env.OCP_PROJECT_DB2 = "debezium-${BUILD_NUMBER}-db2"
                     env.TEST_PROPERTY_VERSION_KAFKA = env.TEST_VERSION_KAFKA ? "-Dversion.kafka=${env.TEST_VERSION_KAFKA}" : ""
                     env.TEST_PROPERTY_TAGS = env.TEST_TAGS ? "-Dgroups=${env.TEST_TAGS}" : ""
-                    env.TEST_PROPERTY_TAGS_EXLUDE = env.TEST_TAGS_EXCLUDE ? "-DexcludeGroups=${env.TEST_TAGS_EXCLUDE }" : ""
+                    env.TEST_PROPERTY_TAGS_EXCLUDE = env.TEST_TAGS_EXCLUDE ? "-DexcludeGroups=${env.TEST_TAGS_EXCLUDE }" : ""
                 }
                 withCredentials([
                         usernamePassword(credentialsId: "${OCP_CREDENTIALS}", usernameVariable: 'OCP_USERNAME', passwordVariable: 'OCP_PASSWORD'),
@@ -174,7 +176,7 @@ pipeline {
                     set -x 
                     cd ${WORKSPACE}/debezium
                     docker login -u=${QUAY_USERNAME} -p=${QUAY_PASSWORD} quay.io
-                    mvn install -pl debezium-testing/debezium-testing-system -DskipTests -DskipITs -Pimage -Dimage.push.skip=false -Dimage.name=${DBZ_CONNECT_IMAGE}   
+                    mvn install -pl debezium-testing/debezium-testing-system -DskipTests -DskipITs -Pimages -Dimage.build.skip.push=false -Dimage.kc=${DBZ_CONNECT_IMAGE}   
                     '''
                 }
             }
@@ -189,7 +191,7 @@ pipeline {
                     set -x
                     cd ${WORKSPACE}/debezium
                     mvn install -pl debezium-testing/debezium-testing-system -PsystemITs \\
-                    -Dimage.fullname="${DBZ_CONNECT_IMAGE}" \\
+                    -Dimage.kc="${DBZ_CONNECT_IMAGE}" \\
                     -Dtest.docker.image.rhel.kafka=${DBZ_CONNECT_RHEL_IMAGE} \\
                     -Dtest.ocp.username="${OCP_USERNAME}" \\
                     -Dtest.ocp.password="${OCP_PASSWORD}" \\
@@ -216,7 +218,7 @@ pipeline {
             archiveArtifacts '**/target/failsafe-reports/*.xml'
             junit '**/target/failsafe-reports/*.xml'
 
-            mail to: 'jcechace@redhat.com', subject: "Debezium OpenShift test run #${BUILD_NUMBER} finished", body: """
+            mail to: MAIL_TO, subject: "Debezium OpenShift test run #${BUILD_NUMBER} finished", body: """
 OpenShift interoperability test run ${BUILD_URL} finished with result: ${currentBuild.currentResult}
 """
         }

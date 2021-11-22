@@ -13,7 +13,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.debezium.DebeziumException;
-import io.debezium.config.CommonConnectorConfig;
 import io.debezium.connector.mysql.signal.ExecuteSnapshotKafkaSignal;
 import io.debezium.connector.mysql.signal.KafkaSignalThread;
 import io.debezium.jdbc.JdbcConnection;
@@ -23,6 +22,7 @@ import io.debezium.pipeline.source.spi.DataChangeEventListener;
 import io.debezium.pipeline.source.spi.SnapshotProgressListener;
 import io.debezium.pipeline.spi.OffsetContext;
 import io.debezium.pipeline.spi.Partition;
+import io.debezium.relational.RelationalDatabaseConnectorConfig;
 import io.debezium.schema.DataCollectionId;
 import io.debezium.schema.DatabaseSchema;
 import io.debezium.util.Clock;
@@ -73,7 +73,7 @@ import io.debezium.util.Clock;
  * <p>A window can be opened and closed right away by the same event. This can happen when a high watermark is an empty set, which means there were no binlog events during the chunk select. Chunk will get inserted right after the low watermark, no events will be deduplicated from the chunk</p>
  * <br/>
  * <b>No updates for included tables</b>
- * <p>It’s important to receive binlog events for the Backfill to make progress.All binlog events are checked against the low and high watermarks, including the events from the tables that aren’t included in the connector. This guarantees that the window processing mode gets updated even when none of the tables included in the connector are getting binlog events.</p>
+ * <p>It’s important to receive binlog events for the incremental snapshot to make progress. All binlog events are checked against the low and high watermarks, including the events from the tables that aren’t included in the connector. This guarantees that the window processing mode gets updated even when none of the tables included in the connector are getting binlog events.</p>
  */
 public class MySqlReadOnlyIncrementalSnapshotChangeEventSource<T extends DataCollectionId> extends AbstractIncrementalSnapshotChangeEventSource<T> {
 
@@ -81,9 +81,11 @@ public class MySqlReadOnlyIncrementalSnapshotChangeEventSource<T extends DataCol
     private final String showMasterStmt = "SHOW MASTER STATUS";
     private final KafkaSignalThread<T> kafkaSignal;
 
-    public MySqlReadOnlyIncrementalSnapshotChangeEventSource(CommonConnectorConfig config, JdbcConnection jdbcConnection,
+    public MySqlReadOnlyIncrementalSnapshotChangeEventSource(RelationalDatabaseConnectorConfig config,
+                                                             JdbcConnection jdbcConnection,
                                                              EventDispatcher<T> dispatcher,
-                                                             DatabaseSchema<?> databaseSchema, Clock clock,
+                                                             DatabaseSchema<?> databaseSchema,
+                                                             Clock clock,
                                                              SnapshotProgressListener progressListener,
                                                              DataChangeEventListener dataChangeEventListener) {
         super(config, jdbcConnection, dispatcher, databaseSchema, clock, progressListener, dataChangeEventListener);

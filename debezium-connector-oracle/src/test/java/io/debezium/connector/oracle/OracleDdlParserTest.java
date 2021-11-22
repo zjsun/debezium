@@ -140,7 +140,7 @@ public class OracleDdlParserTest {
      */
     @Test
     public void shouldParseCreateTable() {
-
+        parser = new OracleDdlParser(true, false, true, null, Tables.TableFilter.includeAll());
         parser.setCurrentDatabase(PDB_NAME);
         parser.setCurrentSchema("DEBEZIUM");
 
@@ -152,6 +152,17 @@ public class OracleDdlParserTest {
                 "  primary key (id)" +
                 ");";
         parser.parse(CREATE_SIMPLE_TABLE, tables);
+        // parse column comment
+        String[] COMMENT_ON_COLUMNS = new String[]{ "comment on column debezium.customer.id is 'pk'",
+                "comment on column customer.name is 'the name'",
+                "comment on column customer.score is 'the score'",
+                "comment on column customer.registered is 'registered date'" };
+        for (String comment : COMMENT_ON_COLUMNS) {
+            parser.parse(comment, tables);
+        }
+        // parse table comment
+        String COMMENT_ON_TABLE = "comment on table debezium.customer is 'this is customer table'";
+        parser.parse(COMMENT_ON_TABLE, tables);
         Table table = tables.forTable(new TableId(PDB_NAME, "DEBEZIUM", "CUSTOMER"));
 
         assertThat(table).isNotNull();
@@ -160,12 +171,14 @@ public class OracleDdlParserTest {
         assertThat(id.isOptional()).isFalse();
         assertThat(id.jdbcType()).isEqualTo(Types.NUMERIC);
         assertThat(id.typeName()).isEqualTo("NUMBER");
+        assertThat(id.comment()).isEqualTo("pk");
 
         final Column name = table.columnWithName("NAME");
         assertThat(name.isOptional()).isTrue();
         assertThat(name.jdbcType()).isEqualTo(Types.VARCHAR);
         assertThat(name.typeName()).isEqualTo("VARCHAR2");
         assertThat(name.length()).isEqualTo(1000);
+        assertThat(name.comment()).isEqualTo("the name");
 
         final Column score = table.columnWithName("SCORE");
         assertThat(score.isOptional()).isTrue();
@@ -173,9 +186,12 @@ public class OracleDdlParserTest {
         assertThat(score.typeName()).isEqualTo("NUMBER");
         assertThat(score.length()).isEqualTo(6);
         assertThat(score.scale().get()).isEqualTo(2);
+        assertThat(score.comment()).isEqualTo("the score");
 
         assertThat(table.columns()).hasSize(4);
         assertThat(table.isPrimaryKeyColumn("ID"));
+
+        assertThat(table.comment()).isEqualTo("this is customer table");
     }
 
     @Test
@@ -340,6 +356,48 @@ public class OracleDdlParserTest {
         assertThat(columnNames).contains("ID");
     }
 
+    @Test
+    @FixFor("DBZ-4240")
+    public void shouldParseNumberAsteriskWithDefaultPrecision() throws Exception {
+        parser.setCurrentDatabase(PDB_NAME);
+        parser.setCurrentSchema("SCOTT");
+
+        String SQL = "CREATE TABLE \"SCOTT\".\"ASTERISK_TEST\" (ID NUMBER(*,0) NOT NULL)";
+        parser.parse(SQL, tables);
+
+        DdlChanges changes = parser.getDdlChanges();
+        List<DdlParserListener.EventType> eventTypes = getEventTypesFromChanges(changes);
+        assertThat(eventTypes).containsExactly(DdlParserListener.EventType.CREATE_TABLE);
+
+        Table table = tables.forTable(new TableId(PDB_NAME, "SCOTT", "ASTERISK_TEST"));
+        assertThat(table.columnWithName("ID").length()).isEqualTo(38);
+        assertThat(table.columnWithName("ID").scale().get()).isEqualTo(0);
+        assertThat(table.columnWithName("ID").isOptional()).isFalse();
+
+        // Reset changes
+        changes.reset();
+
+        SQL = "ALTER TABLE \"SCOTT\".\"ASTERISK_TEST\" MODIFY (ID NUMBER(*,0) NULL);";
+        parser.parse(SQL, tables);
+
+        changes = parser.getDdlChanges();
+        eventTypes = getEventTypesFromChanges(changes);
+        assertThat(eventTypes).containsExactly(DdlParserListener.EventType.ALTER_TABLE);
+
+        table = tables.forTable(new TableId(PDB_NAME, "SCOTT", "ASTERISK_TEST"));
+        assertThat(table.columnWithName("ID").length()).isEqualTo(38);
+        assertThat(table.columnWithName("ID").scale().get()).isEqualTo(0);
+        assertThat(table.columnWithName("ID").isOptional()).isTrue();
+    }
+
+    private List<DdlParserListener.EventType> getEventTypesFromChanges(DdlChanges changes) {
+        List<DdlParserListener.EventType> eventTypes = new ArrayList<>();
+        changes.getEventsByDatabase((String dbName, List<DdlParserListener.Event> events) -> {
+            events.forEach(event -> eventTypes.add(event.type()));
+        });
+        return eventTypes;
+    }
+
     private void testColumn(@NotNull Table table, @NotNull String name, boolean isOptional,
                             Integer jdbcType, String typeName, Integer length, Integer scale,
                             Boolean hasDefault, Object defaultValue) {
@@ -353,8 +411,8 @@ public class OracleDdlParserTest {
             assertThat(oScale.get()).isEqualTo(scale);
         }
         assertThat(column.hasDefaultValue()).isEqualTo(hasDefault);
-        if (column.hasDefaultValue() && column.defaultValue() != null) {
-            assertThat(defaultValue.equals(column.defaultValue()));
+        if (column.hasDefaultValue() && column.defaultValueExpression().isPresent()) {
+            assertThat(defaultValue.equals(column.defaultValueExpression().get()));
         }
     }
 }

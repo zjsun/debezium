@@ -15,7 +15,7 @@ ifdef::community[]
 
 toc::[]
 
-{prodname}'s PostgreSQL connector captures row-level changes in the schemas of a PostgreSQL database. PostgreSQL versions 9.6, 10, 11, 12 and 13 are supported.
+{prodname}'s PostgreSQL connector captures row-level changes in the schemas of a PostgreSQL database. PostgreSQL versions 9.6 - 14 are supported.
 endif::community[]
 ifdef::product[]
 {prodname}'s PostgreSQL connector captures row-level changes in the schemas of a PostgreSQL database. PostgreSQL versions 10, 11, 12 and 13 are supported.
@@ -420,7 +420,8 @@ For every transaction `BEGIN` and `END`, {prodname} generates an event that cont
 }
 ----
 
-Transaction events are written to the topic named `_database.server.name_.transaction`.
+Unless overridden via the {link-prefix}:{link-postgresql-connector}#postgresql-property-transaction-topic[`transaction.topic`] option,
+transaction events are written to the topic named `_database.server.name_.transaction`.
 
 .Change data event enrichment
 
@@ -1387,7 +1388,7 @@ Contains the string representation of the PostgreSQL `ENUM` value. The set of al
 [id="postgresql-temporal-types"]
 === Temporal types
 
-Other than PostgreSQL's `TIMESTAMPTZ` and `TIMETZ` data types, which contain time zone information, how temporal types are mapped depends on the value of the `time.precision.mode` connector configuration property. The following sections describe these mappings:
+Other than PostgreSQL's `TIMESTAMPTZ` and `TIMETZ` data types, which contain time zone information, how temporal types are mapped depends on the value of the xref:postgresql-property-time-precision-mode[`time.precision.mode`] connector configuration property. The following sections describe these mappings:
 
 * xref:postgresql-time-precision-mode-adaptive[`time.precision.mode=adaptive`]
 * xref:postgresql-time-precision-mode-adaptive-time-microseconds[`time.precision.mode=adaptive_time_microseconds`]
@@ -1519,9 +1520,9 @@ This behaviour mimics the standard behaviour of PostgreSQL JDBC driver - see `or
 [id="postgresql-decimal-types"]
 === Decimal types
 
-The setting of the PostgreSQL connector configuration property, `decimal.handling.mode` determines how the connector maps decimal types.
+The setting of the PostgreSQL connector configuration property xref:postgresql-property-decimal-handling-mode[`decimal.handling.mode`] determines how the connector maps decimal types.
 
-When the `decimal.handling.mode` property is set to `precise`, the connector uses the Kafka Connect `org.apache.kafka.connect.data.Decimal` logical type for all `DECIMAL` and `NUMERIC` columns. This is the default mode.
+When the `decimal.handling.mode` property is set to `precise`, the connector uses the Kafka Connect `org.apache.kafka.connect.data.Decimal` logical type for all `DECIMAL`, `NUMERIC` and `MONEY` columns. This is the default mode.
 
 .Mappings when `decimal.handling.mode` is `precise`
 [cols="28%a,17%a,55%a",options="header"]
@@ -1542,12 +1543,19 @@ The `scale` schema parameter contains an integer representing how many digits th
  +
 The `scale` schema parameter contains an integer representing how many digits the decimal point was shifted.
 
+|`MONEY[(M[,D])]`
+|`BYTES`
+|`org.apache.kafka.connect.data.Decimal` +
+ +
+The `scale` schema parameter contains an integer representing how many digits the decimal point was shifted.
+The `scale` schema parameter is determined by the xref:postgresql-property-money-fraction-digits[`money.fraction.digits`] connector configuration property.
+
 |===
 
 There is an exception to this rule.
 When the `NUMERIC` or `DECIMAL` types are used without scale constraints, the values coming from the database have a different (variable) scale for each value. In this case, the connector uses `io.debezium.data.VariableScaleDecimal`, which contains both the value and the scale of the transferred value.
 
-.Mappings of decimal types when there are no scale constraints
+.Mappings of `DECIMAL` and `NUMERIC` types when there are no scale constraints
 [cols="25%a,20%a,55%a",options="header"]
 |===
 |PostgreSQL data type
@@ -1568,7 +1576,7 @@ Contains a structure with two fields: `scale` of type `INT32` that contains the 
 
 |===
 
-When the `decimal.handling.mode` property is set to `double`, the connector represents all `DECIMAL` and `NUMERIC` values as Java double values and encodes them as shown in the following table.
+When the `decimal.handling.mode` property is set to `double`, the connector represents all `DECIMAL`, `NUMERIC` and `MONEY` values as Java double values and encodes them as shown in the following table.
 
 .Mappings when `decimal.handling.mode` is `double`
 [cols="30%a,30%a,40%a",options="header"]
@@ -1585,9 +1593,13 @@ When the `decimal.handling.mode` property is set to `double`, the connector repr
 |`FLOAT64`
 |
 
+|`MONEY[(M[,D])]`
+|`FLOAT64`
+|
+
 |===
 
-The last possible setting for the `decimal.handling.mode` configuration property is `string`. In this case, the connector represents `DECIMAL` and `NUMERIC` values as their formatted string representation, and encodes them as shown in the following table.
+The last possible setting for the `decimal.handling.mode` configuration property is `string`. In this case, the connector represents `DECIMAL`, `NUMERIC` and `MONEY` values as their formatted string representation, and encodes them as shown in the following table.
 
 .Mappings when `decimal.handling.mode` is `string`
 [cols="30%a,30%a,40%a",options="header"]
@@ -1604,6 +1616,10 @@ The last possible setting for the `decimal.handling.mode` configuration property
 |`STRING`
 |
 
+|`MONEY[(M[,D])]`
+|`STRING`
+|
+
 |===
 
 PostgreSQL supports `NaN` (not a number) as a special value to be stored in `DECIMAL`/`NUMERIC` values when the setting of `decimal.handling.mode` is `string` or `double`. In this case, the connector encodes `NaN` as either `Double.NaN` or the string constant `NAN`.
@@ -1611,7 +1627,9 @@ PostgreSQL supports `NaN` (not a number) as a special value to be stored in `DEC
 [id="postgresql-hstore-type"]
 === HSTORE type
 
-When the `hstore.handling.mode` connector configuration property is set to `json` (the default), the connector represents `HSTORE` values as string representations of JSON values and encodes them as shown in the following table. When the `hstore.handling.mode` property is set to `map`, the connector uses the `MAP` schema type for `HSTORE` values.
+The setting of the PostgreSQL connector configuration property xref:postgresql-property-hstore-handling-mode[`hstore.handling.mode`] determines how the connector maps `HSTORE` values.
+
+When the `dhstore.handling.mode` property is set to `json` (the default), the connector represents `HSTORE` values as string representations of JSON values and encodes them as shown in the following table. When the `hstore.handling.mode` property is set to `map`, the connector uses the `MAP` schema type for `HSTORE` values.
 
 .Mappings for `HSTORE` data type
 [cols="25%a,20%a,55%a",options="header"]
@@ -1922,10 +1940,10 @@ As of PostgreSQL 9.4, the only way to read changes to the write-ahead-log is to 
 The PostgreSQL connector works with one of {prodname}'s supported logical decoding plug-ins to encode the changes in either link:https://github.com/google/protobuf[Protobuf format] or link:http://www.json.org/[JSON] format.
 See the documentation for your chosen plug-in to learn more about the plug-in's requirements, limitations, and how to compile it.
 
-* link:https://github.com/debezium/postgres-decoderbufs/blob/master/README.md[`protobuf`]
+* link:https://github.com/debezium/postgres-decoderbufs/blob/main/README.md[`protobuf`]
 * link:https://github.com/eulerto/wal2json/blob/master/README.md[`wal2json`]
 
-For simplicity, {prodname} also provides a container image based on the upstream PostgreSQL server image, on top of which it compiles and installs the plug-ins. You can link:https://github.com/debezium/docker-images/tree/master/postgres/13[use this image] as an example of the detailed steps required for the installation.
+For simplicity, {prodname} also provides a container image based on the upstream PostgreSQL server image, on top of which it compiles and installs the plug-ins. You can link:https://github.com/debezium/docker-images/tree/main/postgres/13[use this image] as an example of the detailed steps required for the installation.
 
 [WARNING]
 ====
@@ -1948,7 +1966,7 @@ See the documentation of `columns_diff_exclude_unchanged_toast` further below fo
 * The `pgoutput` plug-in does not emit all events for tables without primary keys. It emits only events for `INSERT` operations.
 * While all plug-ins will refresh schema metadata from the database upon detection of a schema change during streaming, the `pgoutput` plug-in is somewhat more 'eager' about triggering such refreshes. For example, a change to the default value for a column will trigger a refresh with `pgoutput`, while other plug-ins will not be aware of this change until another change triggers a refresh (eg. addition of a new column.) This is due to the behaviour of `pgoutput`, rather than {prodname} itself.
 
-All up-to-date differences are tracked in a test suite link:https://github.com/debezium/debezium/blob/master/debezium-connector-postgres/src/test/java/io/debezium/connector/postgresql/DecoderDifferences.java[Java class].
+All up-to-date differences are tracked in a test suite link:https://github.com/debezium/debezium/blob/main/debezium-connector-postgres/src/test/java/io/debezium/connector/postgresql/DecoderDifferences.java[Java class].
 
 [[postgresql-server-configuration]]
 === Configuring the PostgreSQL server
@@ -2665,7 +2683,8 @@ After a source record is deleted, emitting a tombstone event (the default behavi
 |_n/a_
 |An optional, comma-separated list of regular expressions that match the fully-qualified names of character-based columns. Fully-qualified names for columns are of the form _schemaName_._tableName_._columnName_. In change event values, the values in the specified table columns are replaced with _length_ number of asterisk (`*`) characters. You can specify multiple properties with different lengths in a single configuration. Length must be a positive integer or zero. When you specify zero, the connector replaces a value with an empty string.
 
-|[[postgresql-property-column-mask-hash]]<<postgresql-property-column-mask-hash, `column.mask.hash._hashAlgorithm_.with.salt._salt_`>>
+|[[postgresql-property-column-mask-hash]]<<postgresql-property-column-mask-hash, `column.mask.hash._hashAlgorithm_.with.salt._salt_`>>;
+[[postgresql-property-column-mask-hash-v2]]<<postgresql-property-column-mask-hash-v2, `column.mask.hash.v2._hashAlgorithm_.with.salt._salt_`>>
 |_n/a_
 |An optional, comma-separated list of regular expressions that match the fully-qualified names of character-based columns.
 Fully-qualified names for columns are of the form _<schemaName>_._<tableName>_._<columnName>_.
@@ -2684,7 +2703,9 @@ column.mask.hash.SHA-256.with.salt.CzQMA0cB5K = inventory.orders.customerName, i
 If necessary, the pseudonym is automatically shortened to the length of the column.
 The connector configuration can include multiple properties that specify different hash algorithms and salts. +
  +
-Depending on the _hashAlgorithm_ used, the _salt_ selected, and the actual data set, the resulting data set might not be completely masked.
+Depending on the _hashAlgorithm_ used, the _salt_ selected, and the actual data set, the resulting data set might not be completely masked. +
+ +
+Hashing strategy version 2 should be used to ensure fidelity if the value is being hashed in different places or systems.
 
 |[[postgresql-property-column-propagate-source-type]]<<postgresql-property-column-propagate-source-type, `+column.propagate.source.type+`>>
 |_n/a_
@@ -2767,6 +2788,11 @@ However, it's best to use the minimum number that are required to specify a uniq
 `include` causes those events to be included. +
  +
 For information about the structure of _truncate_ events and about their ordering semantics, see xref:postgresql-truncate-events[].
+
+|[[postgresql-property-money-fraction-digits]]<<postgresql-property-money-fraction-digits, `+money.fraction.digits+`>>
+|`2`
+|Specifies how many decimal digits should be used when converting Postgres `money` type to `java.math.BigDecimal`, which represents the values in change events.
+Applicable only when `decimal.handling.mode` is set to `precise`.
 
 |===
 
@@ -2971,6 +2997,10 @@ If the setting of `unavailable.value.placeholder` starts with the `hex:` prefix 
 |[[postgresql-property-provide-transaction-metadata]]<<postgresql-property-provide-transaction-metadata, `+provide.transaction.metadata+`>>
 |`false`
 |Determines whether the connector generates events with transaction boundaries and enriches change event envelopes with transaction metadata. Specify `true` if you want the connector to do this. See {link-prefix}:{link-postgresql-connector}#postgresql-transaction-metadata[Transaction metadata] for details.
+
+|[[postgresql-property-transaction-topic]]<<postgresql-property-transaction-topic, `transaction.topic`>>
+|`${database.server.name}.transaction`
+|Controls the name of the topic to which the connector sends transaction metadata messages. The placeholder `${database.server.name}` can be used for referring to the connector's logical name; defaults to `${database.server.name}.transaction`, for example `dbserver1.transaction`.
 
 |[[postgresql-property-retriable-restart-connector-wait-ms]]<<postgresql-property-retriable-restart-connector-wait-ms, `+retriable.restart.connector.wait.ms+`>> +
 |10000 (10 seconds)

@@ -33,12 +33,12 @@ options { tokenVocab=MySqlLexer; }
 // Top Level Description
 
 root
-    : sqlStatements? MINUSMINUS? EOF
+    : sqlStatements? (MINUS MINUS)? EOF
     ;
 
 sqlStatements
-    : (sqlStatement MINUSMINUS? SEMI? | emptyStatement)*
-    (sqlStatement (MINUSMINUS? SEMI)? | emptyStatement)
+    : (sqlStatement (MINUS MINUS)? SEMI? | emptyStatement)*
+    (sqlStatement ((MINUS MINUS)? SEMI)? | emptyStatement)
     ;
 
 sqlStatement
@@ -1084,6 +1084,7 @@ fromClause
         (WITH ROLLUP)?
       )?
       (HAVING havingExpr=expression)?
+      (WINDOW windowName AS '(' windowSpec ')' (',' windowName AS '(' windowSpec ')')*)?
     ;
 
 groupByItem
@@ -1658,6 +1659,8 @@ renameUserClause
 analyzeTable
     : ANALYZE actionOption=(NO_WRITE_TO_BINLOG | LOCAL)?
        TABLE tables
+       ( UPDATE HISTOGRAM ON fullColumnName (',' fullColumnName)* (WITH decimalLiteral BUCKETS)? )?
+       ( DROP HISTOGRAM ON fullColumnName (',' fullColumnName)* )?
     ;
 
 checkTable
@@ -1981,7 +1984,7 @@ indexColumnName
     ;
 
 userName
-    : STRING_USER_NAME | ID | STRING_LITERAL;
+    : STRING_USER_NAME | STRING_USER_NAME_MARIADB | ID | STRING_LITERAL | keywordsCanBeId;
 
 mysqlVariable
     : LOCAL_ID
@@ -2246,6 +2249,7 @@ ifNotExists
 functionCall
     : specificFunction                                              #specificFunctionCall
     | aggregateWindowedFunction                                     #aggregateFunctionCall
+    | nonAggregateWindowedFunction                                  #nonAggregateFunctionCall
     | scalarFunctionName '(' functionArgs? ')'                      #scalarFunctionCall
     | fullId '(' functionArgs? ')'                                  #udfFunctionCall
     | passwordFunctionClause                                        #passwordFunctionCall
@@ -2344,8 +2348,8 @@ specificFunction
       '(' expression
        ',' expression
          (RETURNING convertedDataType)?
-         ((NULL | ERROR | (DEFAULT defaultValue)) ON EMPTY)?
-         ((NULL | ERROR | (DEFAULT defaultValue)) ON ERROR)?
+         ((NULL_LITERAL | ERROR | (DEFAULT defaultValue)) ON EMPTY)?
+         ((NULL_LITERAL | ERROR | (DEFAULT defaultValue)) ON ERROR)?
        ')'                                                          #jsonValueFunctionCall
     ;
 
@@ -2367,19 +2371,66 @@ levelInWeightListElement
 
 aggregateWindowedFunction
     : (AVG | MAX | MIN | SUM)
-      '(' aggregator=(ALL | DISTINCT)? functionArg ')'
-    | COUNT '(' (starArg='*' | aggregator=ALL? functionArg) ')'
-    | COUNT '(' aggregator=DISTINCT functionArgs ')'
+      '(' aggregator=(ALL | DISTINCT)? functionArg ')' overClause?
+    | COUNT '(' (starArg='*' | aggregator=ALL? functionArg | aggregator=DISTINCT functionArgs) ')' overClause?
     | (
         BIT_AND | BIT_OR | BIT_XOR | STD | STDDEV | STDDEV_POP
         | STDDEV_SAMP | VAR_POP | VAR_SAMP | VARIANCE
-      ) '(' aggregator=ALL? functionArg ')'
+      ) '(' aggregator=ALL? functionArg ')' overClause?
     | GROUP_CONCAT '('
         aggregator=DISTINCT? functionArgs
         (ORDER BY
           orderByExpression (',' orderByExpression)*
         )? (SEPARATOR separator=STRING_LITERAL)?
       ')'
+    ;
+
+nonAggregateWindowedFunction
+    : (LAG | LEAD) '(' expression (',' decimalLiteral)? (',' decimalLiteral)? ')' overClause
+    | (FIRST_VALUE | LAST_VALUE) '(' expression ')' overClause
+    | (CUME_DIST | DENSE_RANK | PERCENT_RANK | RANK | ROW_NUMBER) '('')' overClause
+    | NTH_VALUE '(' expression ',' decimalLiteral ')' overClause
+    | NTILE '(' decimalLiteral ')' overClause
+    ;
+
+overClause
+    : OVER ('(' windowSpec? ')' | windowName)
+    ;
+
+windowSpec
+    : windowName? partitionClause? orderByClause? frameClause?
+    ;
+
+windowName
+    : uid
+    ;
+
+frameClause
+    : frameUnits frameExtent
+    ;
+
+frameUnits
+    : ROWS
+    | RANGE
+    ;
+
+frameExtent
+    : frameRange
+    | frameBetween
+    ;
+
+frameBetween
+    : BETWEEN frameRange AND frameRange
+    ;
+
+frameRange
+    : CURRENT ROW
+    | UNBOUNDED (PRECEDING | FOLLOWING)
+    | expression (PRECEDING | FOLLOWING)
+    ;
+
+partitionClause
+    : PARTITION BY expression (',' expression)*
     ;
 
 scalarFunctionName
@@ -2470,7 +2521,7 @@ bitOperator
     ;
 
 mathOperator
-    : '*' | '/' | '%' | DIV | MOD | '+' | '-' | '--'
+    : '*' | '/' | '%' | DIV | MOD | '+' | '-'
     ;
 
 jsonOperator
@@ -2481,9 +2532,9 @@ jsonOperator
 //     (that keyword, which can be id)
 
 charsetNameBase
-    : ARMSCII8 | ASCII | BIG5 | CP1250 | CP1251 | CP1256 | CP1257
+    : ARMSCII8 | ASCII | BIG5 | BINARY | CP1250 | CP1251 | CP1256 | CP1257
     | CP850 | CP852 | CP866 | CP932 | DEC8 | EUCJPMS | EUCKR
-    | GB2312 | GBK | GEOSTD8 | GREEK | HEBREW | HP8 | KEYBCS2
+    | GB18030 | GB2312 | GBK | GEOSTD8 | GREEK | HEBREW | HP8 | KEYBCS2
     | KOI8R | KOI8U | LATIN1 | LATIN2 | LATIN5 | LATIN7 | MACCE
     | MACROMAN | SJIS | SWE7 | TIS620 | UCS2 | UJIS | UTF16
     | UTF16LE | UTF32 | UTF8 | UTF8MB3 | UTF8MB4
@@ -2509,7 +2560,7 @@ dataTypeBase
 
 keywordsCanBeId
     : ACCOUNT | ACTION | AFTER | AGGREGATE | ALGORITHM | ANY
-    | AT | AUDIT_ADMIN | AUTHORS | AUTOCOMMIT | AUTOEXTEND_SIZE
+    | AT | ADMIN | AUDIT_ADMIN | AUTHORS | AUTOCOMMIT | AUTOEXTEND_SIZE
     | AUTO_INCREMENT | AVG | AVG_ROW_LENGTH | BACKUP_ADMIN | BEGIN | BINLOG | BINLOG_ADMIN | BINLOG_ENCRYPTION_ADMIN | BIT | BIT_AND | BIT_OR | BIT_XOR
     | BLOCK | BOOL | BOOLEAN | BTREE | CACHE | CASCADED | CHAIN | CHANGED
     | CHANNEL | CHECKSUM | PAGE_CHECKSUM | CATALOG_NAME | CIPHER

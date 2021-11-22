@@ -45,6 +45,7 @@ LINE_COMMENT:                        (
 // Common Keywords
 
 ADD:                                 'ADD';
+ADMIN:                               'ADMIN';
 ALL:                                 'ALL';
 ALTER:                               'ALTER';
 ALWAYS:                              'ALWAYS';
@@ -56,6 +57,7 @@ ASC:                                 'ASC';
 BEFORE:                              'BEFORE';
 BETWEEN:                             'BETWEEN';
 BOTH:                                'BOTH';
+BUCKETS:                             'BUCKETS';
 BY:                                  'BY';
 CALL:                                'CALL';
 CASCADE:                             'CASCADE';
@@ -111,6 +113,7 @@ GRANT:                               'GRANT';
 GROUP:                               'GROUP';
 HAVING:                              'HAVING';
 HIGH_PRIORITY:                       'HIGH_PRIORITY';
+HISTOGRAM:                           'HISTOGRAM';
 IF:                                  'IF';
 IGNORE:                              'IGNORE';
 IN:                                  'IN';
@@ -155,6 +158,7 @@ OPTIONAL:                            'OPTIONAL';
 OPTIONALLY:                          'OPTIONALLY';
 OR:                                  'OR';
 ORDER:                               'ORDER';
+OVER:                                'OVER';
 OUT:                                 'OUT';
 OUTER:                               'OUTER';
 OUTFILE:                             'OUTFILE';
@@ -326,9 +330,20 @@ BIT_AND:                             'BIT_AND';
 BIT_OR:                              'BIT_OR';
 BIT_XOR:                             'BIT_XOR';
 COUNT:                               'COUNT';
+CUME_DIST:                           'CUME_DIST';
+DENSE_RANK:                          'DENSE_RANK';
+FIRST_VALUE:                         'FIRST_VALUE';
 GROUP_CONCAT:                        'GROUP_CONCAT';
+LAG:                                 'LAG';
+LAST_VALUE:                          'LAST_VALUE';
+LEAD:                                'LEAD';
 MAX:                                 'MAX';
 MIN:                                 'MIN';
+NTILE:                               'NTILE';
+NTH_VALUE:                           'NTH_VALUE';
+PERCENT_RANK:                        'PERCENT_RANK';
+RANK:                                'RANK';
+ROW_NUMBER:                          'ROW_NUMBER';
 STD:                                 'STD';
 STDDEV:                              'STDDEV';
 STDDEV_POP:                          'STDDEV_POP';
@@ -460,6 +475,7 @@ FILTER:                              'FILTER';
 FIRST:                               'FIRST';
 FIXED:                               'FIXED';
 FLUSH:                               'FLUSH';
+FOLLOWING:                           'FOLLOWING';
 FOLLOWS:                             'FOLLOWS';
 FOUND:                               'FOUND';
 FULL:                                'FULL';
@@ -576,6 +592,7 @@ PLUGIN_DIR:                          'PLUGIN_DIR';
 PLUGINS:                             'PLUGINS';
 PORT:                                'PORT';
 PRECEDES:                            'PRECEDES';
+PRECEDING:                           'PRECEDING';
 PREPARE:                             'PREPARE';
 PRESERVE:                            'PRESERVE';
 PREV:                                'PREV';
@@ -688,6 +705,7 @@ VIRTUAL:                             'VIRTUAL';
 VISIBLE:                             'VISIBLE';
 WAIT:                                'WAIT';
 WARNINGS:                            'WARNINGS';
+WINDOW:                              'WINDOW';
 WITHOUT:                             'WITHOUT';
 WORK:                                'WORK';
 WRAPPER:                             'WRAPPER';
@@ -778,6 +796,7 @@ CP932:                               'CP932';
 DEC8:                                'DEC8';
 EUCJPMS:                             'EUCJPMS';
 EUCKR:                               'EUCKR';
+GB18030:                             'GB18030';
 GB2312:                              'GB2312';
 GBK:                                 'GBK';
 GEOSTD8:                             'GEOSTD8';
@@ -1174,7 +1193,6 @@ STAR:                                '*';
 DIVIDE:                              '/';
 MODULE:                              '%';
 PLUS:                                '+';
-MINUSMINUS:                          '--';
 MINUS:                               '-';
 DIV:                                 'DIV';
 MOD:                                 'MOD';
@@ -1274,18 +1292,22 @@ STRING_USER_NAME:                    (
                                        | [0-9]+ '.' [0-9]+ '.' [0-9]+ '.' [0-9]+
                                        | [0-9A-Fa-f:]+
                                      );
-LOCAL_ID:                            '@'
-                                (
-                                  [A-Z0-9._$]+ 
-                                  | SQUOTA_STRING
-                                  | DQUOTA_STRING
-                                  | BQUOTA_STRING
-                                );
-GLOBAL_ID:                           '@' '@' 
-                                (
-                                  [A-Z0-9._$]+ 
-                                  | BQUOTA_STRING
-                                );
+STRING_USER_NAME_MARIADB:            (
+                                        SQUOTA_STRING | DQUOTA_STRING
+                                        | BQUOTA_STRING | ID_LITERAL
+                                     )  '@';
+LOCAL_ID:                               '@'
+                                     (
+                                        [A-Z0-9._$]+
+                                        | SQUOTA_STRING
+                                        | DQUOTA_STRING
+                                        | BQUOTA_STRING
+                                    );
+GLOBAL_ID:                              '@' '@'
+                                    (
+                                        [A-Z0-9._$]+
+                                        | BQUOTA_STRING
+                                    );
 
 
 // Fragments for Literal primitives

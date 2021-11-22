@@ -35,7 +35,8 @@ pipeline {
                         --archive-urls="${DBZ_CONNECTOR_ARCHIVE_URLS}"              \\
                         --libs="${DBZ_EXTRA_LIBS}"                                  \\
                         --image="${RHEL_IMAGE}"                                     \\
-                        --tag="${IMAGE_TAG}"                                        \\
+                        --tags="${EXTRA_IMAGE_TAGS}"                                \\
+                        --auto-tag="${AUTO_TAG}"                                    \\
                         --registry="quay.io" --organisation="${QUAY_ORGANISATION}"  \\
                         --dest-login="${QUAY_USERNAME}"                             \\
                         --dest-pass="${QUAY_PASSWORD}"                              \\
@@ -48,7 +49,7 @@ pipeline {
 
     post {
         always {
-            mail to: 'jcechace@redhat.com', subject: "Debezium OpenShift test run #${BUILD_NUMBER} finished", body: """
+            mail to: MAIL_TO, subject: "Rhel downstream preparation #${BUILD_NUMBER} finished", body: """
 ${currentBuild.projectName} run ${BUILD_URL} finished with result: ${currentBuild.currentResult}
 """
         }

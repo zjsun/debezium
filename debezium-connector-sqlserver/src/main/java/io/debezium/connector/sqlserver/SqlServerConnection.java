@@ -85,6 +85,8 @@ public class SqlServerConnection extends JdbcConnection {
 
     private final SqlServerDefaultValueConverter defaultValueConverter;
 
+    private boolean optionRecompile;
+
     /**
      * Creates a new connection using the supplied configuration.
      *
@@ -138,6 +140,26 @@ public class SqlServerConnection extends JdbcConnection {
         getAllChangesForTable = get_all_changes_for_table.replaceFirst(STATEMENTS_PLACEHOLDER,
                 Matcher.quoteReplacement(sourceTimestampMode.lsnTimestampSelectStatement()));
         this.multiPartitionMode = multiPartitionMode;
+
+        this.optionRecompile = false;
+    }
+
+    /**
+     * Creates a new connection using the supplied configuration.
+     *
+     * @param config {@link Configuration} instance, may not be null.
+     * @param sourceTimestampMode strategy for populating {@code source.ts_ms}.
+     * @param valueConverters {@link SqlServerValueConverters} instance
+     * @param classLoaderSupplier class loader supplier
+     * @param skippedOperations a set of {@link Envelope.Operation} to skip in streaming
+     * @param optionRecompile Includes query option RECOMPILE on incremental snapshots
+     */
+    public SqlServerConnection(Configuration config, SourceTimestampMode sourceTimestampMode,
+                               SqlServerValueConverters valueConverters, Supplier<ClassLoader> classLoaderSupplier,
+                               Set<Envelope.Operation> skippedOperations, boolean multiPartitionMode, boolean optionRecompile) {
+        this(config, sourceTimestampMode, valueConverters, classLoaderSupplier, skippedOperations, multiPartitionMode);
+
+        this.optionRecompile = optionRecompile;
     }
 
     private static String createUrlPattern(boolean multiPartitionMode) {
@@ -434,12 +456,6 @@ public class SqlServerConnection extends JdbcConnection {
     }
 
     @Override
-    protected Optional<Object> getDefaultValue(Column column, String defaultValue) {
-        return defaultValueConverter
-                .parseDefaultValue(column, defaultValue);
-    }
-
-    @Override
     protected boolean isTableUniqueIndexIncluded(String indexName, String columnName) {
         // SQL Server provides indices also without index name
         // so we need to ignore them
@@ -479,6 +495,10 @@ public class SqlServerConnection extends JdbcConnection {
         sql
                 .append(" ORDER BY ")
                 .append(orderBy);
+        if (this.optionRecompile) {
+            sql
+                    .append(" OPTION(RECOMPILE)");
+        }
         return sql.toString();
     }
 
@@ -489,5 +509,9 @@ public class SqlServerConnection extends JdbcConnection {
 
     private String replaceDatabaseNamePlaceholder(String sql, String databaseName) {
         return sql.replace(DATABASE_NAME_PLACEHOLDER, databaseName);
+    }
+
+    public SqlServerDefaultValueConverter getDefaultValueConverter() {
+        return defaultValueConverter;
     }
 }

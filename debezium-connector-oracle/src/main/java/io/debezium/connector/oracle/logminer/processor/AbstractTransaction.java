@@ -17,14 +17,18 @@ import io.debezium.connector.oracle.Scn;
  */
 public abstract class AbstractTransaction implements Transaction {
 
+    private static final String UNKNOWN = "UNKNOWN";
+
     private final String transactionId;
     private final Scn startScn;
     private final Instant changeTime;
+    private final String userName;
 
-    public AbstractTransaction(String transactionId, Scn startScn, Instant changeTime) {
+    public AbstractTransaction(String transactionId, Scn startScn, Instant changeTime, String userName) {
         this.transactionId = transactionId;
         this.startScn = startScn;
         this.changeTime = changeTime;
+        this.userName = !UNKNOWN.equalsIgnoreCase(userName) ? userName : null;
     }
 
     @Override
@@ -40,6 +44,11 @@ public abstract class AbstractTransaction implements Transaction {
     @Override
     public Instant getChangeTime() {
         return changeTime;
+    }
+
+    @Override
+    public String getUserName() {
+        return userName;
     }
 
     @Override
@@ -65,6 +74,7 @@ public abstract class AbstractTransaction implements Transaction {
                 "transactionId='" + transactionId + '\'' +
                 ", startScn=" + startScn +
                 ", changeTime=" + changeTime +
+                ", userName='" + userName + '\'' +
                 '}';
     }
 }
